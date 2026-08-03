@@ -1,0 +1,11 @@
+interface:
+  display_name: Shrinkydink
+  short_description: Compact repo context for coding agents
+  default_prompt: 'Use $shrinkydink to audit and configure this repository for efficient, safer context in Claude Code and Codex.'
+policy:
+  allow_implicit_invocation: true
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
