@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "context_warning_percent": 70,
+  "ignore_mode": "warn",
+  "large_file_warning_kb": 256,
+  "agentsignore": ".agentsignore"
+}

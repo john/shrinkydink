@@ -1,0 +1,3 @@
+[tui]
+# shrinkydink:context-status
+status_line = ["model-with-reasoning", "context-remaining", "current-dir"]

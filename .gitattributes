@@ -1,0 +1,33 @@
+# shrinkydink:start
+# Managed by /shrinkydink. Keep project-specific rules outside this block.
+# Normalize text while preserving platform-specific script endings.
+* text=auto
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Avoid textual diffs and merges for common binary formats.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+# shrinkydink:end

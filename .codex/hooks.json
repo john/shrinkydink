@@ -1,0 +1,33 @@
+{
+  "description": "Repository context guardrails managed by /shrinkydink",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|Read|Glob|Grep|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/guard.py\"",
+            "commandWindows": "py -3 \".agent-tools\\shrinkydink\\guard.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking .agentsignore"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "^(auto|manual)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/codex_precompact.py\"",
+            "commandWindows": "py -3 \".agent-tools\\shrinkydink\\codex_precompact.py\"",
+            "timeout": 5,
+            "statusMessage": "Checkpointing context"
+          }
+        ]
+      }
+    ]
+  }
+}

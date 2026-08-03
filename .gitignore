@@ -1,0 +1,31 @@
+# shrinkydink:start
+# Managed by /shrinkydink. Keep project-specific rules outside this block.
+
+# Local agent and personal configuration
+.claude/settings.local.json
+CLAUDE.local.md
+.codex/*.local.*
+.agent-tools/shrinkydink/__pycache__/
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.p12
+*.pfx
+
+# Operating-system and editor residue
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Logs and temporary output
+*.log
+tmp/
+temp/
+# shrinkydink:end
