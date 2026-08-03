@@ -31,3 +31,6 @@
 *.ttf binary
 *.otf binary
 # shrinkydink:end
+
+# This fixture intentionally ends one rule with an escaped significant space.
+tests/fixtures/agentsignore/v1/syntax.agentsignore whitespace=-blank-at-eol

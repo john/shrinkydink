@@ -81,16 +81,11 @@ retained.
 
 ## `.agentsignore` syntax
 
-The runtime helper implements the practical subset needed by the defaults:
-
-- blank lines and `#` comments;
-- `*`, `?`, character classes, and `**` wildcards;
-- trailing `/` for directories;
-- leading `/` for repository-root anchoring;
-- `!` negation, with the last matching rule winning;
-- patterns without `/` matching at any depth.
-
-This is intentionally close to Git ignore behavior but is not a byte-for-byte implementation of every Git edge case. Keep custom rules straightforward and test them with representative hook payloads when using `deny` mode.
+See [the canonical `.agentsignore` contract](agentsignore.md) for supported
+Git-ignore syntax, typed file/directory matching, excluded-parent negation,
+normalization, Docker Agent compatibility, and migration guidance. In
+particular, `build/` matches the directory and its descendants but not a regular
+file named `build`.
 
 ## Command-line interface
 
@@ -98,6 +93,7 @@ This is intentionally close to Git ignore behavior but is not a byte-for-byte im
 --repo PATH                       repository or subdirectory
 --apply                           write the full validated change set transactionally
 --check                           report drift; exit 1 on drift/conflict
+--check-agentsignore-conformance run packaged matching fixtures; exit 0/1/2
 --context-warning-percent 1-99   override and persist threshold
 --ignore-mode warn|deny|off       override and persist guard behavior
 --large-file-warning-kb KB        override and persist large-file threshold
@@ -124,3 +120,9 @@ python3 path/to/shrinkydink/scripts/shrinkydink.py --repo . --check --no-diff
 ```
 
 Do not fetch and execute the script dynamically in CI without pinning and reviewing the package.
+
+To validate the packaged matching contract independently of a target repository:
+
+```bash
+python3 path/to/shrinkydink/scripts/shrinkydink.py --check-agentsignore-conformance
+```

@@ -315,6 +315,43 @@ class GuardTests(unittest.TestCase):
         )
         self.assert_warning(self.invoke(shell_payload, "/private.pem\n"))
 
+    def test_directory_only_negation_separator_and_symlink_integration(self) -> None:
+        build_file = self.root / "build"
+        build_file.touch()
+        payload = self.payload("codex", "Read", {"file_path": "build"})
+        self.assertIsNone(self.invoke(payload, "build/\n"))
+        build_file.unlink()
+        build_file.mkdir()
+        self.assert_warning(self.invoke(payload, "build/\n"))
+        self.assert_warning(
+            self.invoke(
+                self.payload("codex", "Read", {"file_path": "parent/child.txt"}),
+                "parent/\n!parent/child.txt\n",
+            )
+        )
+        self.assertIsNone(
+            self.invoke(
+                self.payload("codex", "Read", {"file_path": "working\\child.txt"}),
+                "working/*\n!working/child.txt\n",
+            )
+        )
+
+        if hasattr(os, "symlink"):
+            with tempfile.TemporaryDirectory() as outside_directory:
+                outside = Path(outside_directory)
+                try:
+                    (self.root / "outside").symlink_to(outside, target_is_directory=True)
+                except OSError as exc:
+                    self.skipTest(f"symbolic links are unavailable: {exc}")
+                self.assertIsNone(
+                    self.invoke(
+                        self.payload(
+                            "codex", "Read", {"file_path": "outside/private.pem"}
+                        ),
+                        "*.pem\n",
+                    )
+                )
+
     def test_complete_explicit_exclusions_prove_broad_search_safe(self) -> None:
         commands = (
             "rg needle -g '!build/**'",

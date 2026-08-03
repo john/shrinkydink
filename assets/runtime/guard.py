@@ -17,6 +17,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+RUNTIME_DIRECTORY = str(Path(__file__).resolve().parent)
+if RUNTIME_DIRECTORY not in sys.path:
+    sys.path.insert(0, RUNTIME_DIRECTORY)
+
+from agentsignore import (  # noqa: E402
+    PATH_DIRECTORY,
+    PATH_FILE,
+    AgentsIgnoreMatcher,
+    Rule,
+)
+
 DEFAULT_MODE = "warn"
 PATH_KEYS = {
     "file",
@@ -54,15 +65,6 @@ PATCH_PATH_RE = re.compile(
 
 
 @dataclass(frozen=True)
-class Rule:
-    raw: str
-    pattern: str
-    negated: bool
-    directory_only: bool
-    regex: re.Pattern[str]
-
-
-@dataclass(frozen=True)
 class SearchOperation:
     scopes: tuple[str, ...]
     exclusions: tuple[str, ...]
@@ -91,107 +93,6 @@ def load_json(path: Path) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
-
-
-def translate_gitignore(pattern: str, directory_only: bool) -> re.Pattern[str]:
-    """Translate the practical subset of gitignore syntax used by shrinkydink."""
-    anchored = pattern.startswith("/")
-    if anchored:
-        pattern = pattern[1:]
-
-    has_slash = "/" in pattern
-    i = 0
-    chunks: list[str] = []
-    while i < len(pattern):
-        char = pattern[i]
-        if char == "*":
-            if i + 1 < len(pattern) and pattern[i + 1] == "*":
-                i += 2
-                if i < len(pattern) and pattern[i] == "/":
-                    chunks.append("(?:.*/)?")
-                    i += 1
-                else:
-                    chunks.append(".*")
-                continue
-            chunks.append("[^/]*")
-        elif char == "?":
-            chunks.append("[^/]")
-        elif char == "[":
-            end = pattern.find("]", i + 1)
-            if end != -1:
-                content = pattern[i + 1 : end]
-                if content.startswith("!"):
-                    content = "^" + content[1:]
-                chunks.append("[" + content.replace("\\", "\\\\") + "]")
-                i = end
-            else:
-                chunks.append(r"\[")
-        else:
-            chunks.append(re.escape(char))
-        i += 1
-
-    body = "".join(chunks)
-    if anchored or has_slash:
-        prefix = "^"
-    else:
-        prefix = r"^(?:.*/)?"
-
-    # Treat a matching path as a possible directory and include descendants.
-    # This slightly over-approximates Git for impossible file/child paths, which
-    # is safer for a context-ingestion guard.
-    suffix = r"(?:/.*)?$"
-    return re.compile(prefix + body + suffix)
-
-
-def parse_rules(path: Path) -> list[Rule]:
-    rules: list[Rule] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return rules
-
-    for original in lines:
-        line = original.rstrip()
-        if not line or line.lstrip().startswith("#"):
-            continue
-        negated = line.startswith("!")
-        if negated:
-            line = line[1:]
-        elif line.startswith(r"\#"):
-            line = line[1:]
-        if not line:
-            continue
-        directory_only = line.endswith("/")
-        if directory_only:
-            line = line[:-1]
-        try:
-            regex = translate_gitignore(line, directory_only)
-        except re.error:
-            continue
-        rules.append(
-            Rule(
-                raw=original,
-                pattern=line,
-                negated=negated,
-                directory_only=directory_only,
-                regex=regex,
-            )
-        )
-    return rules
-
-
-def match_rule(relative_path: str, rules: Iterable[Rule]) -> Optional[Rule]:
-    normalized = relative_path.replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = normalized.lstrip("/")
-    matched: Optional[Rule] = None
-    ignored = False
-    for rule in rules:
-        if rule.regex.match(normalized):
-            ignored = not rule.negated
-            matched = rule if ignored else None
-    return matched if ignored else None
 
 
 def strings_from_paths(
@@ -229,22 +130,19 @@ def literal_prefix(value: str) -> str:
     return value.rstrip("/")
 
 
-def to_relative(candidate: str, root: Path, cwd: Path) -> Optional[str]:
-    candidate = candidate.strip().replace("\\", "/")
-    if not candidate or candidate in {".", "./", root.as_posix()}:
-        return None
-    candidate = literal_prefix(candidate)
-    if not candidate:
-        return None
-
-    path = Path(candidate).expanduser()
+def candidate_kind(candidate: str, root: Path, cwd: Path) -> str:
+    spelling = literal_prefix(candidate.replace("\\", "/"))
+    if candidate.endswith(("/", "\\")):
+        return PATH_DIRECTORY
+    path = Path(spelling).expanduser()
     if not path.is_absolute():
         path = cwd / path
     try:
-        resolved = path.resolve(strict=False)
-        return resolved.relative_to(root.resolve()).as_posix()
-    except (OSError, ValueError):
-        return None
+        if path.resolve(strict=False).is_dir():
+            return PATH_DIRECTORY
+    except OSError:
+        pass
+    return PATH_FILE
 
 
 def shell_segments(command: str) -> list[list[str]]:
@@ -470,70 +368,13 @@ def target_is_repo_root(value: str, root: Path, cwd: Path) -> bool:
         return False
 
 
-def rule_identity(rule: Rule) -> tuple[str, bool]:
-    pattern = rule.pattern.replace("\\", "/")
-    while pattern.startswith("./"):
-        pattern = pattern[2:]
-    return pattern.rstrip("/"), rule.directory_only
-
-
-def effective_ignore_rules(rules: Iterable[Rule]) -> list[Rule]:
-    """Return non-negated rules not canceled by a later exact negation."""
-    active: dict[tuple[str, bool], Rule] = {}
-    for rule in rules:
-        identity = rule_identity(rule)
-        if rule.negated:
-            active.pop(identity, None)
-        else:
-            active[identity] = rule
-    return list(active.values())
-
-
-def exclusion_key(value: str) -> str:
-    normalized = value.strip().replace("\\", "/")
-    if normalized.startswith("!"):
-        normalized = normalized[1:]
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = normalized.lstrip("/").rstrip("/")
-    if normalized.endswith("/**"):
-        normalized = normalized[:-3].rstrip("/")
-    return normalized
-
-
-def exclusions_cover_rules(exclusions: Iterable[str], rules: Iterable[Rule]) -> bool:
-    keys = {exclusion_key(value) for value in exclusions if exclusion_key(value)}
-    required = {exclusion_key(rule.pattern) for rule in rules}
-    return bool(required) and required.issubset(keys)
-
-
-def rule_may_match_under(scope: str, rule: Rule) -> bool:
-    normalized_scope = scope.replace("\\", "/").strip("/")
-    pattern = rule.pattern.replace("\\", "/")
-    anchored = pattern.startswith("/")
-    pattern = pattern.lstrip("/")
-
-    # An unanchored slashless pattern can match at any depth below any scope.
-    if not anchored and "/" not in pattern:
-        return True
-
-    prefix = literal_prefix(pattern).strip("/")
-    if not prefix or not normalized_scope:
-        return True
-    return (
-        prefix == normalized_scope
-        or prefix.startswith(normalized_scope + "/")
-        or normalized_scope.startswith(prefix + "/")
-    )
-
-
 def operation_may_traverse_ignored(
     operation: SearchOperation,
-    rules: list[Rule],
+    matcher: AgentsIgnoreMatcher,
     root: Path,
     cwd: Path,
 ) -> bool:
-    if not rules or exclusions_cover_rules(operation.exclusions, rules):
+    if not matcher.active_ignore_rules or matcher.exclusions_cover(operation.exclusions):
         return False
     if not operation.scopes:
         return True
@@ -541,11 +382,13 @@ def operation_may_traverse_ignored(
     for scope in operation.scopes:
         if target_is_repo_root(scope, root, cwd):
             return True
-        relative = to_relative(scope, root, cwd)
-        if relative is None:
+        normalized = matcher.normalize(
+            literal_prefix(scope.replace("\\", "/")), root, cwd, PATH_DIRECTORY
+        )
+        if normalized.state != "inside":
             # A scope outside this repository cannot traverse its ignored paths.
             continue
-        if any(rule_may_match_under(relative, rule) for rule in rules):
+        if matcher.may_ignore_under(normalized.relative or ""):
             return True
     return False
 
@@ -602,8 +445,8 @@ def main() -> int:
     if ignore_relative.is_absolute() or ".." in ignore_relative.parts:
         ignore_relative = Path(".agentsignore")
     ignore_path = root / ignore_relative
-    rules = parse_rules(ignore_path)
-    effective_rules = effective_ignore_rules(rules)
+    matcher = AgentsIgnoreMatcher.from_file(ignore_path)
+    effective_rules = list(matcher.active_ignore_rules)
     if not effective_rules:
         return 0
 
@@ -637,18 +480,25 @@ def main() -> int:
             search_operations.append(direct_operation)
 
     matches: list[tuple[str, Rule]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for candidate in candidates:
-        relative = to_relative(str(candidate), root, cwd)
-        if not relative or relative in seen:
+        candidate_text = str(candidate)
+        kind = candidate_kind(candidate_text, root, cwd)
+        normalized = matcher.normalize(
+            literal_prefix(candidate_text.replace("\\", "/")), root, cwd, kind
+        )
+        if normalized.state != "inside" or not normalized.relative:
             continue
-        seen.add(relative)
-        rule = match_rule(relative, rules)
-        if rule:
-            matches.append((relative, rule))
+        key = (normalized.relative, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        result = matcher.match(normalized.relative, kind)
+        if result.ignored and result.rule:
+            matches.append((normalized.relative, result.rule))
 
     broad_search = any(
-        operation_may_traverse_ignored(operation, effective_rules, root, cwd)
+        operation_may_traverse_ignored(operation, matcher, root, cwd)
         for operation in search_operations
     )
     if not matches and not broad_search:

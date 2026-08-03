@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "suite": "canonical-syntax",
+  "rules": "syntax.agentsignore",
+  "cases": [
+    {"id": "blank-and-comment", "candidate": "ordinary.txt", "kind": "file", "expected": "included"},
+    {"id": "escaped-comment", "candidate": "#literal", "kind": "file", "expected": "excluded"},
+    {"id": "escaped-negation", "candidate": "!literal", "kind": "file", "expected": "excluded"},
+    {"id": "star", "candidate": "nested/error.log", "kind": "file", "expected": "excluded"},
+    {"id": "negation", "candidate": "important.log", "kind": "file", "expected": "included"},
+    {"id": "root-anchor", "candidate": "root-only.txt", "kind": "file", "expected": "excluded"},
+    {"id": "root-anchor-nested", "candidate": "nested/root-only.txt", "kind": "file", "expected": "included"},
+    {"id": "directory-only-file", "candidate": "build", "kind": "file", "expected": "included"},
+    {"id": "directory-only-directory", "candidate": "build", "kind": "directory", "expected": "excluded"},
+    {"id": "directory-descendant", "candidate": "build/output.bin", "kind": "file", "expected": "excluded"},
+    {"id": "double-star-zero", "candidate": "docs/draft1.md", "kind": "file", "expected": "excluded"},
+    {"id": "double-star-nested", "candidate": "docs/a/b/draft2.td", "kind": "file", "expected": "excluded"},
+    {"id": "question-and-class-miss", "candidate": "docs/a/draft-long.md", "kind": "file", "expected": "included"},
+    {"id": "escaped-trailing-space", "candidate": "trailing ", "kind": "file", "expected": "excluded"},
+    {"id": "unescaped-space-not-added", "candidate": "trailing", "kind": "file", "expected": "included"},
+    {"id": "excluded-parent-blocks-negation", "candidate": "parent/child.txt", "kind": "file", "expected": "excluded"},
+    {"id": "reinclude-child-working-form", "candidate": "working/child.txt", "kind": "file", "expected": "included"},
+    {"id": "working-form-other-child", "candidate": "working/other.txt", "kind": "file", "expected": "excluded"},
+    {"id": "last-match-precedence", "candidate": "last.txt", "kind": "file", "expected": "excluded"},
+    {"id": "subdirectory-cwd", "candidate": "../root-only.txt", "cwd": "subdir", "kind": "file", "expected": "excluded"},
+    {"id": "windows-separators", "candidate": "docs\\a\\draft1.md", "kind": "file", "expected": "excluded"},
+    {"id": "dot-components", "candidate": "docs/a/../draft1.md", "kind": "file", "expected": "excluded"},
+    {"id": "inside-symlink", "candidate": "links/inside/private.pem", "kind": "file", "expected": "excluded", "requires": "symlink"},
+    {"id": "outside-symlink", "candidate": "links/outside/private.pem", "kind": "file", "expected": "rejected", "requires": "symlink"},
+    {"id": "outside-dotdot", "candidate": "../outside.txt", "kind": "file", "expected": "rejected"}
+  ]
+}
