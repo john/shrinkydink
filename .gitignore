@@ -1,30 +1,35 @@
 # shrinkydink:start
 # Managed by /shrinkydink. Keep project-specific rules outside this block.
 
-# Local agent and personal configuration
+# Automatic defaults (high-confidence)
+# Local agent state and personal configuration should not be committed.
 .claude/settings.local.json
 CLAUDE.local.md
 .codex/*.local.*
 .agent-tools/shrinkydink/__pycache__/
 
-# Secrets and local environment files
+# Automatic defaults (high-confidence)
+# Obvious local environment and private-key files should not be committed.
 .env
 .env.*
 !.env.example
 !.env.sample
 !.env.template
 *.pem
+*.key
 *.p12
 *.pfx
 
-# Operating-system and editor residue
+# Automatic defaults (high-confidence)
+# Operating-system and editor residue is local-only.
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 *~
 
-# Logs and temporary output
+# Automatic defaults (high-confidence)
+# Logs and conventional temporary directories are local output.
 *.log
 tmp/
 temp/

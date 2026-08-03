@@ -22,7 +22,7 @@
 - `deny`: deny direct ignored-path matches and broad operations that may traverse ignored paths unless their recognized scope or explicit exclusions prove every active rule is avoided;
 - `off`: disable the runtime `.agentsignore` hook while retaining written instructions.
 
-`large_file_warning_kb` controls the audit warning for tracked files. Shrinkydink does not automatically ignore or delete those files.
+`large_file_warning_kb` controls the threshold for tracked-file recommendations. Shrinkydink inspects filenames and size metadata only; it does not automatically ignore, open, or delete candidate files.
 
 `agentsignore` may point to another repository-relative ignore file. Planning,
 generation, checks, runtime enforcement, and generated instruction prose all use
@@ -33,15 +33,15 @@ consulted when another path is configured.
 
 | Path | Purpose | Expected version-control treatment |
 |---|---|---|
-| `.gitignore` | Stack-aware local, secret, cache, dependency, and build exclusions | Commit |
-| `.gitattributes` | Text normalization and common binary declarations | Commit |
-| Configured `agentsignore` path (default `.agentsignore`) | Agent-specific context exclusions | Commit |
+| `.gitignore` | Classified high-confidence and detected-ecosystem exclusions | Commit as shared configuration |
+| `.gitattributes` | Git text normalization and common binary declarations; not access control | Commit as shared configuration after review |
+| Configured `agentsignore` path (default `.agentsignore`) | Narrow automatic defaults plus user-owned agent context exclusions | Commit as shared configuration |
 | `AGENTS.md` | Shared cross-agent context-hygiene instructions | Commit |
 | `CLAUDE.md` | Imports `AGENTS.md` and adds Claude-specific notes | Commit |
 | `.shrinkydink.json` | Shared policy and thresholds | Commit |
 | `.agent-tools/shrinkydink/*.py` | Runtime guard and warning helpers | Commit |
 | `.claude/settings.json` | Shared Claude hook, safe native deny rules, and optional status line | Commit |
-| `.claude/settings.local.json` | Optional personal Claude overrides; exact legacy Shrinkydink entries may be migrated | Do not commit; shrinkydink adds it to `.gitignore` |
+| `.claude/settings.local.json` | Optional personal Claude overrides; exact legacy Shrinkydink entries may be migrated | Local configuration; do not commit; shrinkydink adds it to `.gitignore` |
 | `.codex/hooks.json` | Project Codex PreToolUse and PreCompact hooks | Commit |
 | `.codex/config.toml` | Ensures Codex shows `context-remaining` | Commit |
 
@@ -67,6 +67,19 @@ For order-sensitive files—`.gitignore`, `.gitattributes`, and the configured
 `agentsignore` path—the managed block is placed before existing repository
 content. Later user-maintained rules therefore retain final precedence,
 including negations and attribute overrides.
+
+Automatic defaults are represented as classified rule groups. `high-confidence`
+groups cover local agent state, obvious local secrets, and conventional local
+residue. `ecosystem-specific` groups are emitted only when a supported marker is
+found, and reports include each repository-relative marker path. The configured
+agent-ignore file intentionally has no universal `vendor/`, `build/`, `out/`,
+database, archive, source-map, Java-package, or generic-binary exclusions.
+
+An established non-empty `.gitattributes` without Shrinkydink markers produces a
+high-severity policy warning. Attributes affect Git normalization, diff, and
+merge behavior—not LLM access—and applying them can cause later staging to
+renormalize files. The audit diff and explicit `--apply` remain the review and
+approval boundary.
 
 Before planning writes, shrinkydink validates generated Claude settings and Codex hooks after a JSON round trip. Before changing `.codex/config.toml`, it validates existing TOML when the running Python includes `tomllib` (Python 3.11+), validates the generated result, and independently checks its managed inline-hook fragment. On older Python versions, it emits a warning and preserves its conservative marker-based editing behavior.
 
@@ -108,12 +121,31 @@ file named `build`.
 Audit is the default. Audit and check perform no filesystem writes, including
 temporary-file creation in the target repository.
 
-JSON audit and check reports include additive `treatment` and `integration`
-fields that distinguish committed shared artifacts, ignored local artifacts,
-and client trust/reload steps. They include `old` and `new` content for create
-and update entries when diffs are enabled. `--apply` and `--no-diff` reports
-retain those keys with `null` values so write operations and explicitly
-suppressed diffs do not expose file content.
+Text reports separate planned changes, conflicts, warnings, recommendations, and
+unchanged entries. Recommendations are exact-path, reviewable, non-mutating
+actions for tracked large, database, archive, generated, binary, or ambiguous
+paths. A tracked conservative secret-like filename also produces a high-severity
+warning explaining that `.gitignore` does not untrack or remove history and that
+credential rotation may be required; candidate contents are never read.
+
+JSON audit and check reports set `report_version` to `1`. They retain `repo`,
+`mode`, `ecosystems`, `settings`, `changes`, and `warnings`, plus prior change
+fields. Additive fields are `ecosystem_detections`, `default_rule_groups`,
+`conflicts`, and `recommendations`; every warning has a `severity`. Conflicts
+remain in `changes` and are projected into `conflicts` from the same records.
+Reports include `old` and `new` content for shared create/update entries when
+diffs are enabled. `--apply`, `--no-diff`, and local-configuration entries retain
+those keys with `null` values so suppressed content is not exposed. Warnings and
+recommendations do not affect exit codes by themselves.
+
+## Upgrade from the broad agent-ignore policy
+
+There is no upgrade subcommand. Audit with the updated script, review the
+managed-block diff and the `agentsignore-policy-upgrade` warning, copy any
+intentionally retained old rules into user-owned content after the managed
+block, apply explicitly, and run check. The configuration schema remains version
+1. Shrinkydink removes only its former broad managed defaults and never copies
+them into user-owned space automatically.
 
 ## Suggested CI check
 
