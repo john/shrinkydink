@@ -74,6 +74,46 @@ class ShrinkydinkTests(unittest.TestCase):
             self.assertEqual(after_audit, before)
             self.assertEqual(after_check, before)
 
+    def test_json_content_matches_text_diff_visibility(self) -> None:
+        for mode_arguments, expected_code in (((), 0), (("--check",), 1)):
+            with self.subTest(mode=mode_arguments), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                code, output = run_main(
+                    root,
+                    *mode_arguments,
+                    "--json",
+                    "--no-claude",
+                    "--no-codex",
+                )
+                payload = json.loads(output)
+                gitignore = next(
+                    change for change in payload["changes"] if change["path"] == ".gitignore"
+                )
+
+                self.assertEqual(code, expected_code)
+                self.assertEqual(gitignore["status"], "create")
+                self.assertEqual(gitignore["old"], "")
+                self.assertIn("# shrinkydink:start", gitignore["new"])
+
+        for suppressed_arguments in (("--no-diff",), ("--apply",)):
+            with self.subTest(suppressed=suppressed_arguments), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                code, output = run_main(
+                    root,
+                    *suppressed_arguments,
+                    "--json",
+                    "--no-claude",
+                    "--no-codex",
+                )
+                payload = json.loads(output)
+                gitignore = next(
+                    change for change in payload["changes"] if change["path"] == ".gitignore"
+                )
+
+                self.assertEqual(code, 0)
+                self.assertIsNone(gitignore["old"])
+                self.assertIsNone(gitignore["new"])
+
     def test_custom_agentsignore_path_is_used(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

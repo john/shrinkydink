@@ -110,6 +110,11 @@ This is intentionally close to Git ignore behavior but is not a byte-for-byte im
 Audit is the default. Audit and check perform no filesystem writes, including
 temporary-file creation in the target repository.
 
+JSON audit and check reports include `old` and `new` content for create and
+update entries when diffs are enabled. `--apply` and `--no-diff` reports retain
+those keys with `null` values so write operations and explicitly suppressed
+diffs do not expose file content.
+
 ## Suggested CI check
 
 Install or vendor the skill script in a trusted tooling location, then run:

@@ -49,6 +49,7 @@ Implementation deviations recorded by `run`:
 
 - **D-10 — Added `tests/__init__.py`.** Python 3.9 requires the discovery directory to be importable when the approved `python3 -m unittest discover -s tests -t . -v` command uses `-t .`. The empty package marker is the minimum change that makes the recorded verification command execute.
 - **D-11 — Added final preflight concurrency coverage.** `apply_changes` now rejects destinations that appear, disappear, or change after planning but before staging. Two focused tests also cover removal of transaction-created directories and the D-5 independent-change rollback safeguard. This tightens the approved transaction boundary without changing feature scope.
+- **D-12 — Review follow-up for JSON diff parity.** In response to PR review, audit/check JSON now includes `old` and `new` for create/update entries exactly when text diffs are enabled. Apply and `--no-diff` continue emitting `null` to avoid exposing suppressed content.
 
 ## Confirmed current behavior
 
@@ -77,7 +78,7 @@ Reproduced read-only at the planning commit, in throwaway repositories:
 
 | Command | Purpose | Baseline result | Final result |
 |---|---|---|---|
-| `python3 -m unittest discover -s tests -t . -v` | New regression suite covering AC-1 through AC-7 | exit 1: `ImportError: Start directory is not importable: 'tests'` (suite did not exist) | exit 0: 11 tests passed | improved; new suite passes |
+| `python3 -m unittest discover -s tests -t . -v` | New regression suite covering AC-1 through AC-7 | exit 1: `ImportError: Start directory is not importable: 'tests'` (suite did not exist) | exit 0: 12 tests passed, including JSON diff visibility | improved; new suite passes |
 | `python3 scripts/shrinkydink.py --repo . --check --no-diff` | This repository stays self-consistent; guards AC-7 against real content | exit 0, all rows `OK`; expected Python 3.11+ Codex TOML validation warning | exit 0, all rows `OK`; same expected warning | unchanged/pass |
 | `python3 -m compileall -q scripts assets/runtime` | Both edited scripts stay syntactically valid on the host interpreter | exit 0 | exit 0 | unchanged/pass |
 | `python3 scripts/shrinkydink.py --repo . --apply` | Regenerate the installed guard through the product path | not applicable | exit 0; only `.agent-tools/shrinkydink/guard.py` updated, all other destinations `OK` | pass |

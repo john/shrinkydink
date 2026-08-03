@@ -1381,6 +1381,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             apply_result = apply_changes(root, changes)
             warnings.extend(apply_result.warnings)
 
+    show_diff = not args.no_diff and not args.apply
     if args.json:
         payload = {
             "repo": str(root),
@@ -1392,8 +1393,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "path": relative_path(change.path, root),
                     "status": change.status,
                     "note": change.note,
-                    "old": None,
-                    "new": None,
+                    "old": change.old if show_diff and change.changed else None,
+                    "new": change.new if show_diff and change.changed else None,
                 }
                 for change in changes
             ],
@@ -1408,7 +1409,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             warnings,
             ecosystems,
             effective,
-            show_diff=not args.no_diff and not args.apply,
+            show_diff=show_diff,
         )
 
     has_conflict = any(change.status == "conflict" for change in changes)
