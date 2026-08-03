@@ -6,13 +6,16 @@
 
 ## Claude Code
 
-Shrinkydink configures `.claude/settings.local.json` with:
+Shrinkydink configures committed `.claude/settings.json` with:
 
 - `respectGitignore: true` when the setting is absent;
-- a `PreToolUse` command hook for file-oriented tools and Bash;
+- an exec-form `PreToolUse` command hook rooted at `${CLAUDE_PROJECT_DIR}` for file-oriented tools and Bash;
+- project-scoped `Read` and `Edit` denies for the exact `.env` filename and private-key/certificate extensions;
 - a status-line command that reads `context_window.used_percentage` and warns at the configured threshold.
 
-An existing status line is preserved because Claude supports one status-line command per active setting layer and arbitrary composition is unsafe. In that case, the audit reports a manual integration warning.
+Arbitrary `.agentsignore` rules, `.env.*`, negations, dependency/cache rules, and user patterns are not translated into native denies because their ordering cannot be represented faithfully. The hook remains the full `.agentsignore` evaluator. Personal `.claude/settings.local.json` content is optional and is preserved byte-for-byte unless exact legacy Shrinkydink entries can be migrated safely.
+
+An existing status line is preserved because Claude supports one status-line command per active setting layer and arbitrary composition is unsafe. In that case, the audit reports a manual integration warning. After committed project settings change, reload Claude settings and use `/status` to confirm their source and effective scope.
 
 Claude PreToolUse does not run for files inserted directly with `@path`. A hard security boundary requires native permission-deny rules or an external sandbox; `.agentsignore` is not sufficient.
 
@@ -25,7 +28,7 @@ Shrinkydink configures project-local Codex hooks in `.codex/hooks.json`, unless 
 
 It also ensures the TUI status line includes `context-remaining`. Codex currently exposes a native remaining-context footer and compaction lifecycle event, but not a project-hook field containing the exact context percentage. Therefore the configured numeric threshold is exact in Claude and advisory in Codex: Codex shows remaining context continuously and warns when compaction begins.
 
-Project-local Codex hooks require the repository's `.codex` layer and hook definitions to be trusted. A changed hook may require review again.
+Project-local Codex hooks require the repository's `.codex` layer and hook definitions to be trusted. A changed hook may require review again; inspect it with `/hooks` after accepting the project or changed hook hash.
 
 ## Cross-agent ignore file
 
@@ -59,11 +62,19 @@ the caller's `PYTHONPATH`. Python
 3.11+ additionally enables parse validation of existing and generated Codex TOML
 through `tomllib`. The guard discovers a root using `.git` or
 `.shrinkydink.json`, so a configured ignore path also works in a non-Git
-directory. POSIX hook commands resolve the Git top level before invoking them.
-Windows command overrides are included for Codex, but repositories opened from
-nested directories should be tested because Windows shell and Python-launcher
-behavior varies. WSL or Git Bash provides the most consistent cross-platform
-behavior.
+directory. POSIX Codex hook commands resolve the Git top level before invoking
+helpers, while Claude uses its documented project-directory placeholder and
+argument array. Native-Windows Codex overrides use PowerShell to resolve the Git
+top level and join the installed helper path rather than depending on the
+session working directory. Rendering and nested-path behavior are covered by
+fixtures, but native client execution should still be smoke-tested because
+PowerShell, Git, and Python-launcher availability varies. WSL or Git Bash
+remains the most consistent fallback.
+
+Before release, smoke-test Claude Code and Codex from the repository root and a
+nested directory on POSIX, and from a nested directory on native Windows. Verify
+Claude with `/status`, Codex with `/hooks`, and record any trust, reload, or
+restart step required by the installed client version.
 
 The regression suite budgets 50 representative in-process guard invocations at
 no more than one second total on the supported Python 3.9+ test environment and

@@ -38,6 +38,8 @@ MD_END = "<!-- shrinkydink:end -->"
 CODEX_HOOK_START = "# shrinkydink:hooks:start"
 CODEX_HOOK_END = "# shrinkydink:hooks:end"
 CODEX_STATUS_MARKER = "# shrinkydink:context-status"
+CLAUDE_SETTINGS_SCHEMA = "https://json.schemastore.org/claude-code-settings.json"
+CLAUDE_NATIVE_DENY_TARGETS = (".env", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx")
 
 
 @dataclass
@@ -48,6 +50,8 @@ class Change:
     old: Optional[str] = None
     new: Optional[str] = None
     mode: Optional[int] = None
+    treatment: str = "shared-commit"
+    integration: str = ""
 
     @property
     def changed(self) -> bool:
@@ -558,7 +562,7 @@ def claude_md_body(ignore_name: str = ".agentsignore") -> str:
 
 ## Claude Code integration
 
-The shared repository instructions are imported from `AGENTS.md`. Local `{ignore_name}` guard and context-status hooks are configured in `.claude/settings.local.json` when that file can be merged safely. Treat hook warnings as instructions to narrow the operation; an explicit user request may justify a documented exception when `ignore_mode` is `warn`.""".format(ignore_name=ignore_name)
+The shared repository instructions are imported from `AGENTS.md`. Committed `.claude/settings.json` provides the shared `{ignore_name}` guard, conservative native secret-path denies, and the context-status command. Personal `.claude/settings.local.json` content is optional and preserved unless an exact Shrinkydink-managed entry can be migrated safely. Reload project settings and verify their source with `/status`; treat hook warnings as instructions to narrow the operation. An explicit user request may justify a documented exception when `ignore_mode` is `warn`.""".format(ignore_name=ignore_name)
 
 
 def desired_config(existing: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -608,8 +612,27 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     return errors
 
 
-def append_hook(
-    settings: dict[str, Any], event: str, matcher: str, handler: dict[str, Any], needle: str
+def managed_handler_values(handler: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("command", "commandWindows", "command_windows"):
+        value = handler.get(key)
+        if isinstance(value, str):
+            values.append(value)
+    args = handler.get("args")
+    if isinstance(args, list):
+        values.extend(value for value in args if isinstance(value, str))
+    return values
+
+
+def is_managed_handler(handler: Any, script_name: str) -> bool:
+    if not isinstance(handler, dict):
+        return False
+    expected = f".agent-tools/shrinkydink/{script_name}"
+    return any(expected in value.replace("\\", "/") for value in managed_handler_values(handler))
+
+
+def upsert_hook(
+    settings: dict[str, Any], event: str, matcher: str, handler: dict[str, Any], script_name: str
 ) -> Optional[str]:
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -618,17 +641,159 @@ def append_hook(
     if not isinstance(entries, list):
         return f"Existing `hooks.{event}` value is not an array"
 
-    for entry in entries:
+    matches: list[tuple[int, int]] = []
+    for entry_index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
         handlers = entry.get("hooks", [])
         if not isinstance(handlers, list):
-            continue
-        for current in handlers:
-            if isinstance(current, dict) and needle in str(current.get("command", "")):
-                return None
+            return f"Existing `hooks.{event}` entry has a non-array `hooks` value"
+        for handler_index, current in enumerate(handlers):
+            if is_managed_handler(current, script_name):
+                matches.append((entry_index, handler_index))
+
+    if matches:
+        first_entry, first_handler = matches[0]
+        entries[first_entry]["hooks"][first_handler] = handler
+        for entry_index, handler_index in reversed(matches[1:]):
+            del entries[entry_index]["hooks"][handler_index]
+        for entry_index in reversed(range(len(entries))):
+            entry = entries[entry_index]
+            if isinstance(entry, dict) and entry.get("hooks") == []:
+                del entries[entry_index]
+        return None
     entries.append({"matcher": matcher, "hooks": [handler]})
     return None
+
+
+def claude_command_handler(script_name: str, status_message: str) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "command": "python3",
+        "args": [f"${{CLAUDE_PROJECT_DIR}}/.agent-tools/shrinkydink/{script_name}"],
+        "timeout": 5,
+        "statusMessage": status_message,
+    }
+
+
+def codex_posix_command(script_name: str) -> str:
+    return (
+        'python3 "$(git rev-parse --show-toplevel)/.agent-tools/'
+        f'shrinkydink/{script_name}"'
+    )
+
+
+def codex_windows_command(script_name: str) -> str:
+    relative = f".agent-tools\\shrinkydink\\{script_name}"
+    return (
+        'powershell.exe -NoProfile -Command "$root = (& git rev-parse '
+        "--show-toplevel).Trim(); & py -3 (Join-Path $root "
+        f"'{relative}')\""
+    )
+
+
+def codex_command_handler(script_name: str, status_message: str) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "command": codex_posix_command(script_name),
+        "commandWindows": codex_windows_command(script_name),
+        "timeout": 5,
+        "statusMessage": status_message,
+    }
+
+
+def claude_native_deny_rules() -> list[str]:
+    return [
+        f"{operation}(/{target})"
+        for operation in ("Read", "Edit")
+        for target in CLAUDE_NATIVE_DENY_TARGETS
+    ]
+
+
+def validate_command_handler(handler: Any, context: str) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(handler, dict):
+        return [f"{context} handler must be an object"]
+    handler_type = handler.get("type")
+    if not isinstance(handler_type, str):
+        return [f"{context} handler type must be a string"]
+    if handler_type != "command":
+        return errors
+    if not isinstance(handler.get("command"), str) or not handler["command"].strip():
+        errors.append(f"{context} handler command must be a non-empty string")
+    if "args" in handler and (
+        not isinstance(handler["args"], list)
+        or not all(isinstance(value, str) for value in handler["args"])
+    ):
+        errors.append(f"{context} handler args must be an array of strings")
+    for key in ("commandWindows", "command_windows"):
+        if key in handler and not isinstance(handler[key], str):
+            errors.append(f"{context} handler {key} must be a string")
+    return errors
+
+
+def validate_hook_settings(settings: dict[str, Any], client: str) -> list[str]:
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return [f"{client} hooks must be an object"]
+    errors: list[str] = []
+    for event, entries in hooks.items():
+        if not isinstance(event, str) or not isinstance(entries, list):
+            errors.append(f"{client} hook events must map to arrays")
+            continue
+        for index, entry in enumerate(entries):
+            context = f"{client} hooks.{event}[{index}]"
+            if not isinstance(entry, dict):
+                errors.append(f"{context} must be an object")
+                continue
+            if "matcher" in entry and not isinstance(entry.get("matcher"), str):
+                errors.append(f"{context}.matcher must be a string")
+            handlers = entry.get("hooks")
+            if not isinstance(handlers, list) or not handlers:
+                errors.append(f"{context}.hooks must be a non-empty array")
+                continue
+            for handler_index, handler in enumerate(handlers):
+                errors.extend(
+                    validate_command_handler(handler, f"{context}.hooks[{handler_index}]")
+                )
+    return errors
+
+
+def validate_claude_settings(settings: dict[str, Any]) -> list[str]:
+    errors = validate_hook_settings(settings, "Claude")
+    permissions = settings.get("permissions")
+    if not isinstance(permissions, dict):
+        errors.append("Claude permissions must be an object")
+    else:
+        deny = permissions.get("deny")
+        if not isinstance(deny, list) or not all(isinstance(rule, str) for rule in deny):
+            errors.append("Claude permissions.deny must be an array of strings")
+    return errors
+
+
+def validate_codex_hooks(settings: dict[str, Any]) -> list[str]:
+    return validate_hook_settings(settings, "Codex")
+
+
+def validated_json_change(
+    path: Path,
+    settings: dict[str, Any],
+    note: str,
+    validator: Any,
+    client: str,
+    integration: str,
+) -> Change:
+    rendered = json_text(settings)
+    try:
+        round_tripped = json.loads(rendered)
+    except json.JSONDecodeError as exc:
+        return conflict(path, f"Generated {client} JSON did not parse: {exc}")
+    errors = validator(round_tripped) if isinstance(round_tripped, dict) else ["top-level value must be an object"]
+    if errors:
+        return conflict(path, f"Generated {client} configuration did not validate: {'; '.join(errors)}")
+    change = classify_change(path, rendered, note)
+    change.integration = integration
+    return change
 
 
 def plan_claude_settings(path: Path) -> tuple[Change, list[WarningItem]]:
@@ -637,29 +802,33 @@ def plan_claude_settings(path: Path) -> tuple[Change, list[WarningItem]]:
     if error:
         return conflict(path, f"Cannot merge Claude settings safely: {error}"), warnings
 
-    settings.setdefault("$schema", "https://json.schemastore.org/claude-code-settings.json")
+    settings.setdefault("$schema", CLAUDE_SETTINGS_SCHEMA)
     if "respectGitignore" not in settings:
         settings["respectGitignore"] = True
     elif settings.get("respectGitignore") is False:
         warnings.append(
             WarningItem(
                 "claude",
-                "`.claude/settings.local.json` explicitly disables `respectGitignore`; preserved rather than overridden.",
+                "`.claude/settings.json` explicitly disables `respectGitignore`; preserved rather than overridden.",
             )
         )
 
-    handler = {
-        "type": "command",
-        "command": 'python3 "${CLAUDE_PROJECT_DIR}/.agent-tools/shrinkydink/guard.py"',
-        "timeout": 5,
-        "statusMessage": "Checking .agentsignore",
-    }
-    error = append_hook(
+    permissions = settings.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        return conflict(path, "Cannot merge Claude permissions safely: existing value is not an object"), warnings
+    deny = permissions.setdefault("deny", [])
+    if not isinstance(deny, list) or not all(isinstance(rule, str) for rule in deny):
+        return conflict(path, "Cannot merge Claude permissions safely: `permissions.deny` is not an array of strings"), warnings
+    for rule in claude_native_deny_rules():
+        if rule not in deny:
+            deny.append(rule)
+
+    error = upsert_hook(
         settings,
         "PreToolUse",
         "^(Read|Glob|Grep|Edit|Write|Bash)$",
-        handler,
-        ".agent-tools/shrinkydink/guard.py",
+        claude_command_handler("guard.py", "Checking .agentsignore"),
+        "guard.py",
     )
     if error:
         return conflict(path, f"Cannot merge Claude hooks safely: {error}"), warnings
@@ -672,7 +841,9 @@ def plan_claude_settings(path: Path) -> tuple[Change, list[WarningItem]]:
     current_status = settings.get("statusLine")
     if current_status is None:
         settings["statusLine"] = desired_status
-    elif "shrinkydink/claude_status.py" not in json.dumps(current_status, sort_keys=True):
+    elif is_managed_handler(current_status, "claude_status.py"):
+        settings["statusLine"] = desired_status
+    else:
         warnings.append(
             WarningItem(
                 "claude",
@@ -680,7 +851,91 @@ def plan_claude_settings(path: Path) -> tuple[Change, list[WarningItem]]:
             )
         )
 
-    return classify_change(path, json_text(settings), "Merged Claude local settings"), warnings
+    return validated_json_change(
+        path,
+        settings,
+        "Merged Claude shared project settings",
+        validate_claude_settings,
+        "Claude",
+        "Reload project settings and verify the shared source with `/status`.",
+    ), warnings
+
+
+def remove_local_managed_entries(settings: dict[str, Any]) -> bool:
+    changed = False
+    hooks = settings.get("hooks")
+    if isinstance(hooks, dict):
+        entries = hooks.get("PreToolUse")
+        if isinstance(entries, list):
+            for entry_index in reversed(range(len(entries))):
+                entry = entries[entry_index]
+                if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                    continue
+                handlers = entry["hooks"]
+                retained = [handler for handler in handlers if not is_managed_handler(handler, "guard.py")]
+                if retained != handlers:
+                    changed = True
+                    entry["hooks"] = retained
+                if not entry["hooks"]:
+                    del entries[entry_index]
+            if not entries:
+                del hooks["PreToolUse"]
+        if not hooks:
+            del settings["hooks"]
+    current_status = settings.get("statusLine")
+    if is_managed_handler(current_status, "claude_status.py"):
+        del settings["statusLine"]
+        changed = True
+    return changed
+
+
+def plan_claude_local_migration(path: Path) -> tuple[Change, list[WarningItem]]:
+    warnings: list[WarningItem] = []
+    if not path.exists():
+        return Change(
+            path=str(path),
+            status="ok",
+            note="Claude local settings are absent and will not be created",
+            treatment="local-ignore",
+            integration="Shared enforcement does not depend on local settings.",
+        ), warnings
+    settings, error = load_json_object(path)
+    if error:
+        warnings.append(WarningItem("claude-local", f"Preserved `.claude/settings.local.json` unchanged: {error}"))
+        return Change(
+            path=str(path), status="ok", note="Preserved unreadable or malformed Claude local settings",
+            treatment="local-ignore", integration="Manual review is required before removing legacy Shrinkydink entries."
+        ), warnings
+    existing = path.read_text(encoding="utf-8")
+    candidate = json.loads(json.dumps(settings))
+    changed = remove_local_managed_entries(candidate)
+    if not changed:
+        if "statusLine" in settings:
+            warnings.append(
+                WarningItem(
+                    "claude-local",
+                    "An existing personal Claude `statusLine` was preserved. Local scalar precedence may hide the shared Shrinkydink status line; compose the commands manually if both displays are wanted.",
+                )
+            )
+        return Change(
+            path=str(path), status="ok", note="Preserved Claude local settings unchanged",
+            treatment="local-ignore", integration="Personal local configuration remains authoritative at local scope."
+        ), warnings
+    if existing != json_text(settings):
+        warnings.append(
+            WarningItem(
+                "claude-local",
+                "Recognized legacy Shrinkydink entries in `.claude/settings.local.json`, but preserved the file byte-for-byte because its formatting is not canonical; remove those entries manually after reviewing local preferences.",
+            )
+        )
+        return Change(
+            path=str(path), status="ok", note="Preserved noncanonical Claude local settings byte-for-byte",
+            treatment="local-ignore", integration="Manual migration is optional; shared enforcement is already committed."
+        ), warnings
+    change = classify_change(path, json_text(candidate), "Migrated exact Shrinkydink-owned entries from Claude local settings")
+    change.treatment = "local-ignore"
+    change.integration = "Review the local migration; shared enforcement no longer depends on this file."
+    return change, warnings
 
 
 def plan_codex_hooks_json(path: Path) -> Change:
@@ -689,52 +944,49 @@ def plan_codex_hooks_json(path: Path) -> Change:
         return conflict(path, f"Cannot merge Codex hooks safely: {error}")
     settings.setdefault("description", "Repository context guardrails managed by /shrinkydink")
 
-    guard_handler = {
-        "type": "command",
-        "command": 'python3 "$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/guard.py"',
-        "commandWindows": 'py -3 ".agent-tools\\shrinkydink\\guard.py"',
-        "timeout": 5,
-        "statusMessage": "Checking .agentsignore",
-    }
-    error = append_hook(
+    error = upsert_hook(
         settings,
         "PreToolUse",
         "^(Bash|apply_patch|Read|Glob|Grep|Edit|Write)$",
-        guard_handler,
-        ".agent-tools/shrinkydink/guard.py",
+        codex_command_handler("guard.py", "Checking .agentsignore"),
+        "guard.py",
     )
     if error:
         return conflict(path, f"Cannot merge Codex PreToolUse hook safely: {error}")
 
-    compact_handler = {
-        "type": "command",
-        "command": 'python3 "$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/codex_precompact.py"',
-        "commandWindows": 'py -3 ".agent-tools\\shrinkydink\\codex_precompact.py"',
-        "timeout": 5,
-        "statusMessage": "Checkpointing context",
-    }
-    error = append_hook(
+    error = upsert_hook(
         settings,
         "PreCompact",
         "^(auto|manual)$",
-        compact_handler,
-        ".agent-tools/shrinkydink/codex_precompact.py",
+        codex_command_handler("codex_precompact.py", "Checkpointing context"),
+        "codex_precompact.py",
     )
     if error:
         return conflict(path, f"Cannot merge Codex PreCompact hook safely: {error}")
 
-    return classify_change(path, json_text(settings), "Merged Codex lifecycle hooks")
+    return validated_json_change(
+        path,
+        settings,
+        "Merged Codex lifecycle hooks",
+        validate_codex_hooks,
+        "Codex",
+        "Trust the project and changed hook definitions, then review them with `/hooks`.",
+    )
 
 
 def codex_inline_hook_body() -> str:
-    return """# Managed by /shrinkydink because this config already contains inline hooks.
+    guard_posix = json.dumps(codex_posix_command("guard.py"))
+    guard_windows = json.dumps(codex_windows_command("guard.py"))
+    compact_posix = json.dumps(codex_posix_command("codex_precompact.py"))
+    compact_windows = json.dumps(codex_windows_command("codex_precompact.py"))
+    return f"""# Managed by /shrinkydink because this config already contains inline hooks.
 [[hooks.PreToolUse]]
 matcher = "^(Bash|apply_patch|Read|Glob|Grep|Edit|Write)$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'python3 "$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/guard.py"'
-command_windows = 'py -3 ".agent-tools\\shrinkydink\\guard.py"'
+command = {guard_posix}
+command_windows = {guard_windows}
 timeout = 5
 statusMessage = "Checking .agentsignore"
 
@@ -743,11 +995,24 @@ matcher = "^(auto|manual)$"
 
 [[hooks.PreCompact.hooks]]
 type = "command"
-command = 'python3 "$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/codex_precompact.py"'
-command_windows = 'py -3 ".agent-tools\\shrinkydink\\codex_precompact.py"'
+command = {compact_posix}
+command_windows = {compact_windows}
 timeout = 5
 statusMessage = "Checkpointing context"
 """
+
+
+def validate_codex_inline_hook_body(body: str) -> list[str]:
+    errors: list[str] = []
+    for script_name in ("guard.py", "codex_precompact.py"):
+        if f"command = {json.dumps(codex_posix_command(script_name))}" not in body:
+            errors.append(f"missing POSIX command for {script_name}")
+        windows = codex_windows_command(script_name)
+        if f"command_windows = {json.dumps(windows)}" not in body:
+            errors.append(f"missing Windows command for {script_name}")
+    if 'py -3 ".agent-tools' in body or "py -3 '.agent-tools" in body:
+        errors.append("contains a current-working-directory-relative Windows command")
+    return errors
 
 
 def ensure_codex_status_line(existing: str) -> tuple[str, Optional[str]]:
@@ -816,10 +1081,14 @@ def plan_codex_config(path: Path, use_inline_hooks: bool) -> tuple[Change, list[
         warnings.append(WarningItem("codex", status_warning))
 
     if use_inline_hooks:
+        inline_body = codex_inline_hook_body()
+        inline_errors = validate_codex_inline_hook_body(inline_body)
+        if inline_errors:
+            return conflict(path, f"Generated Codex inline hooks did not validate: {'; '.join(inline_errors)}"), warnings
         try:
             updated = merge_managed_block(
                 updated,
-                codex_inline_hook_body(),
+                inline_body,
                 CODEX_HOOK_START,
                 CODEX_HOOK_END,
             )
@@ -831,7 +1100,9 @@ def plan_codex_config(path: Path, use_inline_hooks: bool) -> tuple[Change, list[
             tomllib.loads(updated)
         except tomllib.TOMLDecodeError as exc:
             return conflict(path, f"Generated Codex TOML did not validate: {exc}"), warnings
-    return classify_change(path, updated, "Ensured Codex context meter"), warnings
+    change = classify_change(path, updated, "Ensured Codex context meter")
+    change.integration = "Trust the project and changed hook definitions, then review them with `/hooks`."
+    return change, warnings
 
 
 def has_inline_codex_hooks(text: str) -> bool:
@@ -862,7 +1133,7 @@ def tracked_large_files(root: Path, threshold_kb: int) -> list[tuple[str, int]]:
 
 
 def render_diff(change: Change, root: Path) -> str:
-    if not change.changed or change.new is None:
+    if change.treatment == "local-ignore" or not change.changed or change.new is None:
         return ""
     path = Path(change.path)
     try:
@@ -994,12 +1265,16 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
         changes.append(change)
 
     if not args.no_claude:
-        claude_path = destination(Path(".claude") / "settings.local.json")
-        if claude_path is not None:
-            claude_change, claude_warnings = plan_claude_settings(claude_path)
-            claude_change.mode = 0o600
+        claude_shared_path = destination(Path(".claude") / "settings.json")
+        if claude_shared_path is not None:
+            claude_change, claude_warnings = plan_claude_settings(claude_shared_path)
             changes.append(claude_change)
             warnings.extend(claude_warnings)
+        claude_local_path = destination(Path(".claude") / "settings.local.json")
+        if claude_local_path is not None:
+            local_change, local_warnings = plan_claude_local_migration(claude_local_path)
+            changes.append(local_change)
+            warnings.extend(local_warnings)
 
     if not args.no_codex:
         codex_config_path = destination(Path(".codex") / "config.toml")
@@ -1299,6 +1574,9 @@ def print_text_report(
         print(f"{labels.get(change.status, change.status.upper()):8} {relative_path(change.path, root)}")
         if change.note:
             print(f"         {change.note}")
+        print(f"         Treatment: {change.treatment}")
+        if change.integration:
+            print(f"         Activation: {change.integration}")
     if warnings:
         print("\nWarnings:")
         for item in warnings:
@@ -1469,8 +1747,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "path": relative_path(change.path, root),
                     "status": change.status,
                     "note": change.note,
-                    "old": change.old if show_diff and change.changed else None,
-                    "new": change.new if show_diff and change.changed else None,
+                    "treatment": change.treatment,
+                    "integration": change.integration,
+                    "old": change.old if show_diff and change.changed and change.treatment != "local-ignore" else None,
+                    "new": change.new if show_diff and change.changed and change.treatment != "local-ignore" else None,
                 }
                 for change in changes
             ],
