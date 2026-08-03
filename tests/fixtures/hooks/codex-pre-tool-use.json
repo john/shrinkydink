@@ -1,0 +1,14 @@
+{
+  "session_id": "fixture-codex-session",
+  "transcript_path": null,
+  "cwd": "/workspace/repository",
+  "hook_event_name": "PreToolUse",
+  "model": "fixture-model",
+  "permission_mode": "default",
+  "turn_id": "fixture-turn",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/workspace/repository/README"
+  },
+  "tool_use_id": "tool_fixture_codex"
+}

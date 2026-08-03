@@ -38,7 +38,11 @@ convention, not a universal agent standard. It is honored through three layers:
 
 The guard can miss indirect shell expansion, tool-specific arguments it does not recognize, hosted tools, direct prompt attachments, and agent implementations that ignore both `AGENTS.md` and lifecycle hooks. Default to `warn`; use `deny` only as defense in depth, not as a substitute for filesystem permissions, secret management, or sandboxing.
 
-The guard distinguishes many narrow path-scoped searches from repository-wide scans. A command such as `rg term src/` normally proceeds without a broad-search warning, while an unscoped repository search may warn because it can traverse ignored paths. This detection is intentionally conservative and remains best-effort.
+The guard distinguishes proven-safe path-scoped searches from repository-wide scans. It inspects scalar, nested, and list-valued path fields for the configured file tools, `apply_patch` headers, and bounded operands for `cat`, `head`, `cp`, and `rm`. For search tools it keeps the content expression separate from filesystem targets: direct `Grep` and `Glob`, shell `rg`, recursive `grep`, `fd`, `find`, and recursive `ls` are treated as broad when they have no safe scope and an active ignore rule could be traversed.
+
+Scope and exclusion proof is intentionally conservative. Anchored or path-qualified ignore rules can be proven disjoint from a narrow target, while an unanchored slashless rule such as `*.pem` can match below any directory. Recognized exact exclusions include negated `rg` globs, recursive `grep` `--exclude`/`--exclude-dir` values, and `fd` exclusions. Every active ignore rule must be covered before an otherwise broad operation proceeds silently. General glob containment, shell expansion, aliases, wrappers, and arbitrary program arguments remain outside the bounded parser.
+
+In `warn` mode a finding returns both a user-visible `systemMessage` and model-visible `additionalContext`. In `deny` mode the same finding returns a current Claude/Codex `PreToolUse` denial. Messages can name paths and ignore rules but never read or include ignored-file contents.
 
 ## Runtime assumptions
 
@@ -51,3 +55,9 @@ Windows command overrides are included for Codex, but repositories opened from
 nested directories should be tested because Windows shell and Python-launcher
 behavior varies. WSL or Git Bash provides the most consistent cross-platform
 behavior.
+
+The regression suite budgets 50 representative in-process guard invocations at
+no more than one second total on the supported Python 3.9+ test environment and
+fails if the guard calls repository-walk APIs. This is a regression threshold,
+not a real-time guarantee; each invocation reads only the policy file and the
+configured ignore file rather than walking repository contents.

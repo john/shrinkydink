@@ -18,8 +18,8 @@
 
 `ignore_mode` supports:
 
-- `warn`: show the user a warning and inject guidance into the agent context, but allow the tool call;
-- `deny`: deny matched PreToolUse calls when the hook can identify a concrete ignored path;
+- `warn`: show the user a warning and inject guidance into the agent context for a direct ignored-path match or a broad operation that may traverse ignored paths, but allow the tool call;
+- `deny`: deny direct ignored-path matches and broad operations that may traverse ignored paths unless their recognized scope or explicit exclusions prove every active rule is avoided;
 - `off`: disable the runtime `.agentsignore` hook while retaining written instructions.
 
 `large_file_warning_kb` controls the audit warning for tracked files. Shrinkydink does not automatically ignore or delete those files.
