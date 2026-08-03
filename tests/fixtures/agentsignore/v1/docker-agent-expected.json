@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "suite": "docker-agent-compatibility",
+  "rules": "docker-agent.agentsignore",
+  "cases": [
+    {"id": "docker-bare-name-root", "candidate": ".env", "kind": "file", "expected": "excluded"},
+    {"id": "docker-bare-name-nested", "candidate": "service/.env", "kind": "file", "expected": "excluded"},
+    {"id": "docker-anchored-directory", "candidate": "secrets", "kind": "directory", "expected": "excluded"},
+    {"id": "docker-anchored-directory-descendant", "candidate": "secrets/token.txt", "kind": "file", "expected": "excluded"},
+    {"id": "docker-anchor-does-not-match-nested", "candidate": "service/secrets/token.txt", "kind": "file", "expected": "included"},
+    {"id": "docker-glob", "candidate": "nested/private.key", "kind": "file", "expected": "excluded"},
+    {"id": "docker-negation", "candidate": "public.key", "kind": "file", "expected": "included"},
+    {"id": "docker-directory-file", "candidate": "build", "kind": "file", "expected": "included"},
+    {"id": "docker-directory", "candidate": "build", "kind": "directory", "expected": "excluded"},
+    {"id": "docker-double-star", "candidate": "docs/design/old.draft.md", "kind": "file", "expected": "excluded"},
+    {"id": "docker-nonmatch", "candidate": "docs/design/current.md", "kind": "file", "expected": "included"}
+  ]
+}

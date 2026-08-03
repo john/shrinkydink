@@ -1,0 +1,6 @@
+.env
+/secrets/
+*.key
+build/
+docs/**/*.draft.md
+!public.key

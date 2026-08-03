@@ -149,7 +149,24 @@ class ShrinkydinkTests(unittest.TestCase):
             self.assertIn("config/agent-ignore", guarded.stdout)
             self.assertIn(".env", guarded.stdout)
 
+            child = root / "src"
+            child.mkdir()
+            payload["cwd"] = str(child)
+            payload["tool_input"] = {"file_path": "../.env"}
+            nested = subprocess.run(
+                [sys.executable, str(guard)],
+                cwd=child,
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(nested.returncode, 0, nested.stderr)
+            self.assertIn("config/agent-ignore", nested.stdout)
+            self.assertIn(".env", nested.stdout)
+
             (root / ".agentsignore").write_text("root-only-secret\n", encoding="utf-8")
+            payload["cwd"] = str(root)
             payload["tool_input"] = {"file_path": str(root / "root-only-secret")}
             stale = subprocess.run(
                 [sys.executable, str(guard)],
@@ -310,7 +327,12 @@ class ShrinkydinkTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(gitignore.stat().st_mode), 0o640)
             settings = root / ".claude" / "settings.local.json"
             self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o600)
-            for name in ("guard.py", "claude_status.py", "codex_precompact.py"):
+            for name in (
+                "guard.py",
+                "agentsignore.py",
+                "claude_status.py",
+                "codex_precompact.py",
+            ):
                 helper = root / ".agent-tools" / "shrinkydink" / name
                 self.assertEqual(stat.S_IMODE(helper.stat().st_mode), 0o755)
 

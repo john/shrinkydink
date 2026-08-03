@@ -42,11 +42,20 @@ The guard distinguishes proven-safe path-scoped searches from repository-wide sc
 
 Scope and exclusion proof is intentionally conservative. Anchored or path-qualified ignore rules can be proven disjoint from a narrow target, while an unanchored slashless rule such as `*.pem` can match below any directory. Recognized exact exclusions include negated `rg` globs, recursive `grep` `--exclude`/`--exclude-dir` values, and `fd` exclusions. Every active ignore rule must be covered before an otherwise broad operation proceeds silently. General glob containment, shell expansion, aliases, wrappers, and arbitrary program arguments remain outside the bounded parser.
 
+The canonical matcher distinguishes files from directories, normalizes `/` and
+`\` candidate separators plus dot components, resolves existing symlink
+components, and rejects outside-repository candidates from repository-relative
+evaluation. Drive and UNC spellings follow the host platform. Full syntax,
+excluded-parent behavior, Docker Agent compatibility differences, and migration
+notes are documented in [the `.agentsignore` contract](agentsignore.md).
+
 In `warn` mode a finding returns both a user-visible `systemMessage` and model-visible `additionalContext`. In `deny` mode the same finding returns a current Claude/Codex `PreToolUse` denial. Messages can name paths and ignore rules but never read or include ignored-file contents.
 
 ## Runtime assumptions
 
-The generated helpers require Python 3 and use only the standard library. Python
+The generated helpers require Python 3 and use only the standard library. The
+matcher is installed beside `guard.py`, so direct execution does not depend on
+the caller's `PYTHONPATH`. Python
 3.11+ additionally enables parse validation of existing and generated Codex TOML
 through `tomllib`. The guard discovers a root using `.git` or
 `.shrinkydink.json`, so a configured ignore path also works in a non-Git

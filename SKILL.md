@@ -61,7 +61,7 @@ python3 <skill-directory>/scripts/shrinkydink.py \
 
 Use `--no-claude` or `--no-codex` to omit one platform. Use `--json` for machine-readable output. Use `--check` in CI; exit code `1` means drift or a conflict, and exit code `2` means invocation failure.
 
-Read [references/configuration.md](references/configuration.md) for the generated files, pattern semantics, and options. Read [references/platform-support.md](references/platform-support.md) before explaining cross-agent guarantees or troubleshooting hooks. Read [references/installation.md](references/installation.md) when installing this skill in Claude Code or Codex.
+Read [references/configuration.md](references/configuration.md) for the generated files and options. Read [references/agentsignore.md](references/agentsignore.md) for canonical matching semantics, conformance, and migration guidance. Read [references/platform-support.md](references/platform-support.md) before explaining cross-agent guarantees or troubleshooting hooks. Read [references/installation.md](references/installation.md) when installing this skill in Claude Code or Codex.
 
 ## Result standard
 

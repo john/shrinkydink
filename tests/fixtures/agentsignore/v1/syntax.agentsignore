@@ -1,0 +1,18 @@
+# Blank lines and comments do not match.
+
+\#literal
+\!literal
+*.log
+!important.log
+/root-only.txt
+build/
+docs/**/draft?.[mt][d]
+trailing\ 
+parent/
+!parent/child.txt
+working/*
+!working/child.txt
+last.txt
+!last.txt
+last.txt
+secrets/**

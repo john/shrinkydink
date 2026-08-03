@@ -976,7 +976,7 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
 
     runtime_names: list[str] = []
     if not args.no_claude or not args.no_codex:
-        runtime_names.append("guard.py")
+        runtime_names.extend(("guard.py", "agentsignore.py"))
     if not args.no_claude:
         runtime_names.append("claude_status.py")
     if not args.no_codex:
@@ -1313,6 +1313,7 @@ def print_text_report(
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(
         description="Create or validate cross-agent repository context hygiene files."
     )
@@ -1322,6 +1323,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--apply", action="store_true", help="Write the full validated change set transactionally"
     )
     mode.add_argument("--check", action="store_true", help="Exit 1 when drift or conflicts exist")
+    mode.add_argument(
+        "--check-agentsignore-conformance",
+        action="store_true",
+        help="Run the packaged .agentsignore conformance fixtures and exit",
+    )
     parser.add_argument(
         "--context-warning-percent",
         type=int,
@@ -1346,14 +1352,84 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-diff", action="store_true", help="Suppress unified diffs in audit/check output"
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     if args.large_file_warning_kb is not None and args.large_file_warning_kb < 1:
         parser.error("--large-file-warning-kb must be at least 1")
+    if args.check_agentsignore_conformance:
+        incompatible = []
+        if any(value == "--repo" or value.startswith("--repo=") for value in raw_argv):
+            incompatible.append("--repo")
+        for option, value in (
+            ("--context-warning-percent", args.context_warning_percent),
+            ("--ignore-mode", args.ignore_mode),
+            ("--large-file-warning-kb", args.large_file_warning_kb),
+            ("--no-claude", args.no_claude),
+            ("--no-codex", args.no_codex),
+            ("--no-diff", args.no_diff),
+        ):
+            if value not in {None, False}:
+                incompatible.append(option)
+        if incompatible:
+            parser.error(
+                "--check-agentsignore-conformance cannot be combined with "
+                + ", ".join(incompatible)
+            )
     return args
+
+
+def agentsignore_runtime() -> Any:
+    runtime_directory = Path(__file__).resolve().parents[1] / "assets" / "runtime"
+    runtime_text = str(runtime_directory)
+    if runtime_text not in sys.path:
+        sys.path.insert(0, runtime_text)
+    import agentsignore
+
+    return agentsignore
+
+
+def print_conformance_report(report: dict[str, Any]) -> None:
+    status = str(report.get("status", "error")).upper()
+    print(
+        f"Agentsignore conformance: {status} "
+        f"({report.get('passed', 0)} passed, {report.get('failed', 0)} failed, "
+        f"{report.get('skipped', 0)} skipped)"
+    )
+    for error in report.get("errors", []):
+        print(f"ERROR  {error}")
+    for suite in report.get("suites", []):
+        cases = suite.get("cases", [])
+        failed = [case for case in cases if case.get("status") == "fail"]
+        skipped = [case for case in cases if case.get("status") == "skip"]
+        print(
+            f"{'PASS' if not failed else 'FAIL':5}  {suite.get('name')} "
+            f"({len(cases) - len(failed) - len(skipped)}/{len(cases)} passed)"
+        )
+        for case in failed:
+            print(
+                f"       {case.get('id')}: expected {case.get('expected')}, "
+                f"got {case.get('actual')}"
+            )
+        for case in skipped:
+            print(f"SKIP   {case.get('id')}: platform capability unavailable")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    if args.check_agentsignore_conformance:
+        runtime = agentsignore_runtime()
+        fixture_root = (
+            Path(__file__).resolve().parents[1]
+            / "tests"
+            / "fixtures"
+            / "agentsignore"
+            / "v1"
+        )
+        report = runtime.run_conformance(fixture_root)
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print_conformance_report(report)
+        return runtime.conformance_exit_code(report)
     try:
         root = resolve_repo(args.repo)
     except ValueError as exc:

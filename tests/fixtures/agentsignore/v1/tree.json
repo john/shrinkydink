@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "nodes": [
+    {"path": "subdir", "kind": "directory"},
+    {"path": "secrets", "kind": "directory"},
+    {"path": "secrets/private.pem", "kind": "file"},
+    {"path": "links", "kind": "directory"},
+    {"path": "links/inside", "kind": "symlink", "target": "../secrets"},
+    {"path": "links/outside", "kind": "symlink", "target": "$OUTSIDE"}
+  ]
+}
