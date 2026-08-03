@@ -377,8 +377,9 @@ def detect_ecosystems(root: Path, max_depth: int = 3) -> list[EcosystemDetection
         except ValueError:
             continue
         dirs[:] = [d for d in dirs if d not in pruned and depth < max_depth]
+        file_set = set(files)
         for ecosystem, names in markers.items():
-            for filename in sorted(names & set(files)):
+            for filename in sorted(names & file_set):
                 marker = (current_path / filename).relative_to(root).as_posix()
                 detected.setdefault(ecosystem, set()).add(marker)
         for filename in files:
@@ -1857,7 +1858,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--large-file-warning-kb",
         type=int,
         metavar="KB",
-        help=f"Warn about larger tracked files (default: {DEFAULT_LARGE_FILE_WARNING_KB})",
+        help=(
+            "Recommend review of larger tracked files above this threshold "
+            f"(default: {DEFAULT_LARGE_FILE_WARNING_KB})"
+        ),
     )
     parser.add_argument("--no-claude", action="store_true", help="Do not manage Claude files")
     parser.add_argument("--no-codex", action="store_true", help="Do not manage Codex files")

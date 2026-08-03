@@ -79,12 +79,12 @@ Per the `feat plan` workflow, no baseline is run during planning. `run` records 
 | Command | Purpose | Baseline result | Final result |
 |---|---|---|---|
 | `python3 -m unittest tests.test_diagnostics -v` | New rule-classification, marker, metadata-only recommendation, secret warning, report schema, attributes warning, and preservation coverage | exit 1: planned module did not exist (`ModuleNotFoundError`) | pass: 9 tests |
-| `python3 -m unittest tests.test_documentation -v` | README terminology, required content, and executable command/scenario contract | exit 1: planned module did not exist (`ModuleNotFoundError`) | pass: 3 tests |
+| `python3 -m unittest tests.test_documentation -v` | README terminology, required content, executable command/scenario contract, and CLI help terminology | exit 1: planned module did not exist (`ModuleNotFoundError`) | pass: 4 tests |
 | `python3 -m unittest tests.test_shrinkydink -v` | Existing CLI, transaction, managed-block, custom path, mode, and idempotence regressions | pass: 12 tests | pass: 12 tests |
 | `python3 -m unittest tests.test_agent_integrations -v` | Feature-0004 shared/local reporting and Claude/Codex integration compatibility | pass: 8 tests | pass: 8 tests |
 | `python3 -m unittest tests.test_guard -v` | Warning/deny behavior and no-content-leak enforcement regressions | pass: 16 tests | pass: 16 tests |
 | `python3 -m unittest tests.test_agentsignore_conformance -v` | Canonical matching semantics and conformance-report compatibility | pass: 7 tests | pass: 7 tests |
-| `python3 -m unittest discover -s tests -t . -v` | Full Python 3.9-compatible repository regression suite | pass: 43 tests | pass: 55 tests |
+| `python3 -m unittest discover -s tests -t . -v` | Full Python 3.9-compatible repository regression suite | pass: 43 tests | pass: 56 tests |
 | `python3 scripts/shrinkydink.py --repo . --check --no-diff` | Dogfood generated-file consistency under the no-ecosystem conservative policy | exit 1: pre-existing ignored local-only `.claude/settings.local.json` migration; Python 3.9 cannot validate existing Codex TOML | exit 1: materially identical pre-existing ignored local-only migration and Python 3.9 warning; every shared destination is unchanged. Supplemental `--no-claude --no-codex` check passes. |
 | `cmp -s assets/runtime/guard.py .agent-tools/shrinkydink/guard.py && cmp -s assets/runtime/agentsignore.py .agent-tools/shrinkydink/agentsignore.py && cmp -s assets/runtime/claude_status.py .agent-tools/shrinkydink/claude_status.py && cmp -s assets/runtime/codex_precompact.py .agent-tools/shrinkydink/codex_precompact.py` | Prove canonical and dogfood runtime helpers remain byte-identical | pass | pass |
 | `git diff --check` | Reject whitespace errors in code, documentation, fixtures, dogfood policy, and this plan | pass | pass |

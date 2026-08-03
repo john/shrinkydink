@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from tests.test_shrinkydink import PROJECT_ROOT, run_main
+from tests.test_shrinkydink import PROJECT_ROOT, SCRIPT_PATH, run_main
 
 
 EXAMPLES = json.loads(
@@ -17,6 +18,18 @@ EXAMPLES = json.loads(
 
 
 class DocumentationTests(unittest.TestCase):
+    def test_cli_help_describes_large_file_recommendations(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Recommend review of larger tracked files", result.stdout)
+        self.assertNotIn("Warn about larger tracked files", result.stdout)
+
     def test_readme_has_required_contract_and_canonical_commands(self) -> None:
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
         for heading in (
