@@ -67,10 +67,14 @@ class AgentsIgnoreConformanceTests(unittest.TestCase):
             root_spelling = matcher.normalize("src\\private.pem", root, root)
             nested_spelling = matcher.normalize("private.pem", root, root / "src")
             dot_spelling = matcher.normalize("src/./private.pem", root, root)
+            invalid_spelling = matcher.normalize("invalid\x00path", root, root)
+            outside_spelling = matcher.normalize(str(root.parent / "outside.txt"), root, root)
 
             self.assertEqual(root_spelling.relative, "src/private.pem")
             self.assertEqual(nested_spelling.relative, "src/private.pem")
             self.assertEqual(dot_spelling.relative, "src/private.pem")
+            self.assertEqual(invalid_spelling.state, "invalid")
+            self.assertEqual(outside_spelling.state, "outside")
 
             if hasattr(os, "symlink"):
                 try:

@@ -285,8 +285,11 @@ class AgentsIgnoreMatcher:
                 path = cwd / path
             resolved_root = root.resolve(strict=False)
             resolved = path.resolve(strict=False)
-            relative = resolved.relative_to(resolved_root).as_posix()
         except (OSError, RuntimeError, ValueError):
+            return NormalizedPath("invalid", None, kind)
+        try:
+            relative = resolved.relative_to(resolved_root).as_posix()
+        except ValueError:
             return NormalizedPath("outside", None, kind)
         return NormalizedPath("inside", "" if relative == "." else relative, kind)
 
