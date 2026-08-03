@@ -27,9 +27,10 @@ It also ensures the TUI status line includes `context-remaining`. Codex currentl
 
 Project-local Codex hooks require the repository's `.codex` layer and hook definitions to be trusted. A changed hook may require review again.
 
-## Cross-agent `.agentsignore`
+## Cross-agent ignore file
 
-`.agentsignore` is a shrinkydink convention, not a universal agent standard. It is honored through three layers:
+The configured `agentsignore` file (default `.agentsignore`) is a shrinkydink
+convention, not a universal agent standard. It is honored through three layers:
 
 1. written instructions in `AGENTS.md` and imported `CLAUDE.md`;
 2. lifecycle hooks that inspect common path-bearing tool inputs;
@@ -41,4 +42,12 @@ The guard distinguishes many narrow path-scoped searches from repository-wide sc
 
 ## Runtime assumptions
 
-The generated helpers require Python 3 and use only the standard library. Python 3.11+ additionally enables parse validation of existing and generated Codex TOML through `tomllib`. POSIX hook commands resolve the Git top level before invoking them. Windows command overrides are included for Codex, but repositories opened from nested directories should be tested because Windows shell and Python-launcher behavior varies. WSL or Git Bash provides the most consistent cross-platform behavior.
+The generated helpers require Python 3 and use only the standard library. Python
+3.11+ additionally enables parse validation of existing and generated Codex TOML
+through `tomllib`. The guard discovers a root using `.git` or
+`.shrinkydink.json`, so a configured ignore path also works in a non-Git
+directory. POSIX hook commands resolve the Git top level before invoking them.
+Windows command overrides are included for Codex, but repositories opened from
+nested directories should be tested because Windows shell and Python-launcher
+behavior varies. WSL or Git Bash provides the most consistent cross-platform
+behavior.
