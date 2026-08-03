@@ -2,13 +2,15 @@
 # Managed by /shrinkydink. Add repo-specific rules outside this block.
 # Syntax is the practical gitignore subset documented by this skill.
 
-# Version-control internals and agent-local state
+# Automatic defaults (high-confidence)
+# Version-control internals and agent-local state do not belong in model context.
 .git/
 .claude/settings.local.json
 CLAUDE.local.md
 .agent-tools/shrinkydink/__pycache__/
 
-# Secrets: do not ingest these into model context
+# Automatic defaults (high-confidence)
+# Obvious local environment and private-key files should not enter model context.
 .env
 .env.*
 !.env.example
@@ -18,56 +20,4 @@ CLAUDE.local.md
 *.key
 *.p12
 *.pfx
-
-# Dependencies, caches, build products, and coverage
-node_modules/
-vendor/
-.venv/
-venv/
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.tox/
-.nox/
-.gradle/
-.cache/
-.turbo/
-.next/
-.nuxt/
-.svelte-kit/
-target/
-dist/
-build/
-out/
-coverage/
-htmlcov/
-tmp/
-temp/
-*.log
-
-# Generated bundles and source maps
-*.min.js
-*.min.css
-*.map
-
-# Binary databases, archives, and compiled artifacts
-*.db
-*.sqlite
-*.sqlite3
-*.zip
-*.tar
-*.tar.gz
-*.tgz
-*.7z
-*.rar
-*.jar
-*.war
-*.class
-*.o
-*.so
-*.dylib
-*.dll
-*.exe
-*.bin
 # shrinkydink:end

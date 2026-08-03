@@ -6,6 +6,12 @@ direct guard checks, conservative broad-search reasoning, audit messages, and
 the versioned conformance suite. It is a context-control convention and hook
 guardrail, not a filesystem sandbox or secret boundary.
 
+This document defines matching semantics, not Shrinkydink's generated policy.
+The automatic default block is deliberately narrow and classified separately
+from non-mutating recommendations. Ecosystem rules appear only when marker
+filenames are detected; repository-specific rules belong outside the managed
+block, where they retain final precedence.
+
 ## Supported syntax
 
 - Blank lines have no effect. A leading unescaped `#` starts a comment.

@@ -37,9 +37,22 @@ convention, not a universal agent standard. It is honored through three layers:
 
 1. written instructions in `AGENTS.md` and imported `CLAUDE.md`;
 2. lifecycle hooks that inspect common path-bearing tool inputs;
-3. narrow default patterns that exclude dependencies, caches, generated output, secrets, archives, and binary databases.
+3. narrow high-confidence automatic defaults plus detected-ecosystem defaults.
+
+With no detected ecosystem, the automatic agent-ignore policy covers only Git
+internals, agent-local state, obvious local environment files, and private-key
+or certificate extensions. Dependency stores, caches, and generated products
+are added only when a supported marker justifies them. Ambiguous tracked large,
+database, archive, source-map, binary, `vendor/`, `build/`, or `out/` paths are
+reported as exact-path recommendations instead of being hidden automatically.
+Detection and classification inspect path and size metadata only.
 
 The guard can miss indirect shell expansion, tool-specific arguments it does not recognize, hosted tools, direct prompt attachments, and agent implementations that ignore both `AGENTS.md` and lifecycle hooks. Default to `warn`; use `deny` only as defense in depth, not as a substitute for filesystem permissions, secret management, or sandboxing.
+
+A tracked conservative secret-like filename receives a high-severity warning,
+not automatic remediation. `.gitignore` cannot untrack it or remove history;
+rotate exposed credentials and follow the repository's incident process.
+Shrinkydink does not read candidate contents and is not a secret scanner.
 
 The guard distinguishes proven-safe path-scoped searches from repository-wide scans. It inspects scalar, nested, and list-valued path fields for the configured file tools, `apply_patch` headers, and bounded operands for `cat`, `head`, `cp`, and `rm`. For search tools it keeps the content expression separate from filesystem targets: direct `Grep` and `Glob`, shell `rg`, recursive `grep`, `fd`, `find`, and recursive `ls` are treated as broad when they have no safe scope and an active ignore rule could be traversed.
 

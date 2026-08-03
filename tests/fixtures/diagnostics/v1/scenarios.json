@@ -1,0 +1,16 @@
+{
+  "ecosystems": {
+    "node": {"marker": "package.json", "agent_rule": "*.map"},
+    "python": {"marker": "pyproject.toml", "agent_rule": ".venv/"},
+    "java": {"marker": "pom.xml", "agent_rule": "*.jar"},
+    "ruby": {"marker": "Gemfile", "agent_rule": "vendor/bundle/"},
+    "terraform": {"marker": "infra/main.tf", "agent_rule": "*.tfstate"}
+  },
+  "ambiguous_rules": ["vendor/", "build/", "out/", "*.db", "*.map", "*.jar", "*.bin"],
+  "tracked_candidates": [
+    "data/fixture.db",
+    "assets/application.map",
+    "vendor/tool.bin",
+    "fixtures/large.dat"
+  ]
+}

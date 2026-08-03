@@ -231,7 +231,7 @@ class ShrinkydinkTests(unittest.TestCase):
             agents = root / "AGENTS.md"
             agents.write_text("original\n", encoding="utf-8")
             args = shrinkydink.parse_args(["--repo", str(root), "--apply"])
-            changes, _, _, _ = shrinkydink.build_plan(root, args)
+            changes, _, _, _, _, _ = shrinkydink.build_plan(root, args)
             agents.write_text("independent\n", encoding="utf-8")
 
             result = shrinkydink.apply_changes(root, changes)

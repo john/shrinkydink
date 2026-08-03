@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 try:
     import tomllib
@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # Python 3.10 and older
     tomllib = None  # type: ignore[assignment]
 
 VERSION = 1
+REPORT_VERSION = 1
 DEFAULT_CONTEXT_WARNING_PERCENT = 70
 DEFAULT_IGNORE_MODE = "warn"
 DEFAULT_LARGE_FILE_WARNING_KB = 256
@@ -40,6 +41,14 @@ CODEX_HOOK_END = "# shrinkydink:hooks:end"
 CODEX_STATUS_MARKER = "# shrinkydink:context-status"
 CLAUDE_SETTINGS_SCHEMA = "https://json.schemastore.org/claude-code-settings.json"
 CLAUDE_NATIVE_DENY_TARGETS = (".env", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx")
+TERMINOLOGY = {
+    "automatic": "automatic defaults",
+    "recommendation": "recommendations",
+    "warning": "warnings",
+    "denial": "denials",
+    "shared": "shared configuration",
+    "local": "local configuration",
+}
 
 
 @dataclass
@@ -62,6 +71,40 @@ class Change:
 class WarningItem:
     kind: str
     message: str
+    severity: str = "warning"
+
+
+@dataclass(frozen=True)
+class EcosystemDetection:
+    name: str
+    markers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RuleGroup:
+    target: str
+    classification: str
+    reason: str
+    rules: tuple[str, ...]
+    ecosystem: Optional[str] = None
+    detection_markers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TrackedPath:
+    path: str
+    size_bytes: Optional[int]
+    kind: str
+
+
+@dataclass(frozen=True)
+class Recommendation:
+    path: str
+    categories: tuple[str, ...]
+    reasons: tuple[str, ...]
+    size_bytes: Optional[int]
+    agentsignore_path: str
+    suggested_rule: Optional[str]
 
 
 @dataclass
@@ -87,6 +130,7 @@ def run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(root), *args],
         text=True,
+        errors="surrogateescape",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -214,8 +258,22 @@ def merge_managed_block(
     return merged.replace("\n", newline)
 
 
+def managed_block_body(existing: str, start: str = TEXT_START, end: str = TEXT_END) -> str:
+    normalized = normalize_newlines(existing)
+    start_index = normalized.find(start)
+    end_index = normalized.find(end, start_index + len(start))
+    if start_index == -1 or end_index == -1:
+        return ""
+    return normalized[start_index + len(start) : end_index]
+
+
 def json_text(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=False) + "\n"
+
+
+def display_path(path: str) -> str:
+    """Render path metadata on one line without interpreting control characters."""
+    return json.dumps(path, ensure_ascii=True)
 
 
 def load_json_object(path: Path) -> tuple[dict[str, Any], Optional[str]]:
@@ -285,7 +343,7 @@ def unique(lines: Iterable[str]) -> list[str]:
     return result
 
 
-def detect_ecosystems(root: Path, max_depth: int = 3) -> set[str]:
+def detect_ecosystems(root: Path, max_depth: int = 3) -> list[EcosystemDetection]:
     markers = {
         "node": {"package.json", "pnpm-workspace.yaml", "yarn.lock"},
         "python": {"pyproject.toml", "requirements.txt", "Pipfile", "setup.py", "tox.ini"},
@@ -298,7 +356,7 @@ def detect_ecosystems(root: Path, max_depth: int = 3) -> set[str]:
         "swift": {"Package.swift"},
     }
     suffix_markers = {"dotnet": {".sln", ".csproj", ".fsproj"}, "terraform": {".tf"}}
-    detected: set[str] = set()
+    detected: dict[str, set[str]] = {}
     pruned = {
         ".git",
         "node_modules",
@@ -321,107 +379,193 @@ def detect_ecosystems(root: Path, max_depth: int = 3) -> set[str]:
         dirs[:] = [d for d in dirs if d not in pruned and depth < max_depth]
         file_set = set(files)
         for ecosystem, names in markers.items():
-            if names & file_set:
-                detected.add(ecosystem)
+            for filename in sorted(names & file_set):
+                marker = (current_path / filename).relative_to(root).as_posix()
+                detected.setdefault(ecosystem, set()).add(marker)
         for filename in files:
             suffix = Path(filename).suffix
             for ecosystem, suffixes in suffix_markers.items():
                 if suffix in suffixes:
-                    detected.add(ecosystem)
+                    marker = (current_path / filename).relative_to(root).as_posix()
+                    detected.setdefault(ecosystem, set()).add(marker)
         if depth >= max_depth:
             dirs[:] = []
-    return detected
+    return [
+        EcosystemDetection(name=name, markers=tuple(sorted(paths)))
+        for name, paths in sorted(detected.items())
+    ]
 
 
-def gitignore_body(ecosystems: set[str]) -> str:
-    groups: list[tuple[str, list[str]]] = [
-        (
-            "Local agent and personal configuration",
-            [
+def _detection_map(
+    detections: Union[Iterable[EcosystemDetection], set[str]],
+) -> dict[str, tuple[str, ...]]:
+    result: dict[str, tuple[str, ...]] = {}
+    for detection in detections:
+        if isinstance(detection, str):
+            result[detection] = ()
+        else:
+            result[detection.name] = detection.markers
+    return result
+
+
+def default_rule_groups(
+    detections: Union[Iterable[EcosystemDetection], set[str]],
+    ignore_name: str = ".agentsignore",
+) -> list[RuleGroup]:
+    detected = _detection_map(detections)
+    groups = [
+        RuleGroup(
+            ".gitignore",
+            "high-confidence",
+            "Local agent state and personal configuration should not be committed.",
+            (
                 ".claude/settings.local.json",
                 "CLAUDE.local.md",
                 ".codex/*.local.*",
                 ".agent-tools/shrinkydink/__pycache__/",
-            ],
+            ),
         ),
-        (
-            "Secrets and local environment files",
-            [
+        RuleGroup(
+            ".gitignore",
+            "high-confidence",
+            "Obvious local environment and private-key files should not be committed.",
+            (
                 ".env",
                 ".env.*",
                 "!.env.example",
                 "!.env.sample",
                 "!.env.template",
                 "*.pem",
+                "*.key",
                 "*.p12",
                 "*.pfx",
-            ],
+            ),
         ),
-        (
-            "Operating-system and editor residue",
-            [".DS_Store", "Thumbs.db", "*.swp", "*.swo", "*~"],
+        RuleGroup(
+            ".gitignore",
+            "high-confidence",
+            "Operating-system and editor residue is local-only.",
+            (".DS_Store", "Thumbs.db", "*.swp", "*.swo", "*~"),
         ),
-        ("Logs and temporary output", ["*.log", "tmp/", "temp/"]),
+        RuleGroup(
+            ".gitignore",
+            "high-confidence",
+            "Logs and conventional temporary directories are local output.",
+            ("*.log", "tmp/", "temp/"),
+        ),
+        RuleGroup(
+            ignore_name,
+            "high-confidence",
+            "Version-control internals and agent-local state do not belong in model context.",
+            (
+                ".git/",
+                ".claude/settings.local.json",
+                "CLAUDE.local.md",
+                ".agent-tools/shrinkydink/__pycache__/",
+            ),
+        ),
+        RuleGroup(
+            ignore_name,
+            "high-confidence",
+            "Obvious local environment and private-key files should not enter model context.",
+            (
+                ".env",
+                ".env.*",
+                "!.env.example",
+                "!.env.sample",
+                "!.env.template",
+                "*.pem",
+                "*.key",
+                "*.p12",
+                "*.pfx",
+            ),
+        ),
     ]
-
-    ecosystem_patterns: dict[str, tuple[str, list[str]]] = {
+    ecosystem_rules: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
         "node": (
-            "Node.js",
-            [
-                "node_modules/",
-                ".npm/",
-                ".pnpm-store/",
-                ".yarn/cache/",
-                ".yarn/unplugged/",
-                "dist/",
-                "build/",
-                "coverage/",
-                ".next/",
-                ".nuxt/",
-                ".svelte-kit/",
-                ".turbo/",
-            ],
+            "Node.js dependency stores, caches, generated bundles, and coverage output.",
+            (
+                "node_modules/", ".npm/", ".pnpm-store/", ".yarn/cache/",
+                ".yarn/unplugged/", "dist/", "build/", "coverage/", ".next/",
+                ".nuxt/", ".svelte-kit/", ".turbo/",
+            ),
+            (
+                "node_modules/", ".npm/", ".pnpm-store/", ".yarn/cache/",
+                ".yarn/unplugged/", "dist/", "build/", "coverage/", ".next/",
+                ".nuxt/", ".svelte-kit/", ".turbo/", "*.min.js", "*.min.css", "*.map",
+            ),
         ),
         "python": (
-            "Python",
-            [
-                "__pycache__/",
-                "*.py[cod]",
-                ".venv/",
-                "venv/",
-                ".pytest_cache/",
-                ".mypy_cache/",
-                ".ruff_cache/",
-                ".tox/",
-                ".nox/",
-                ".coverage",
-                "htmlcov/",
-                "*.egg-info/",
-                "dist/",
-                "build/",
-            ],
+            "Python environments, caches, packaging output, and coverage data.",
+            (
+                "__pycache__/", "*.py[cod]", ".venv/", "venv/", ".pytest_cache/",
+                ".mypy_cache/", ".ruff_cache/", ".tox/", ".nox/", ".coverage",
+                "htmlcov/", "*.egg-info/", "dist/", "build/",
+            ),
+            (
+                "__pycache__/", "*.py[cod]", ".venv/", "venv/", ".pytest_cache/",
+                ".mypy_cache/", ".ruff_cache/", ".tox/", ".nox/", ".coverage",
+                "htmlcov/", "*.egg-info/", "dist/", "build/",
+            ),
         ),
-        "rust": ("Rust", ["/target/"]),
-        "go": ("Go", ["/bin/", "*.test", "coverage.out"]),
-        "java": ("Java, Maven, and Gradle", [".gradle/", "target/", "build/", "*.class"]),
-        "dotnet": (".NET", ["bin/", "obj/", ".vs/", "*.user", "*.suo"]),
-        "ruby": ("Ruby", [".bundle/", "vendor/bundle/", "log/", "tmp/"]),
+        "rust": ("Rust compiler output.", ("/target/",), ("/target/",)),
+        "go": ("Go build and test output.", ("/bin/", "*.test", "coverage.out"), ("/bin/", "*.test", "coverage.out")),
+        "java": (
+            "Java, Maven, and Gradle caches and build artifacts.",
+            (".gradle/", "target/", "build/", "*.class"),
+            (".gradle/", "target/", "build/", "*.class", "*.jar", "*.war"),
+        ),
+        "dotnet": (".NET build and user-local output.", ("bin/", "obj/", ".vs/", "*.user", "*.suo"), ("bin/", "obj/", ".vs/", "*.user", "*.suo")),
+        "ruby": ("Ruby dependency and runtime output.", (".bundle/", "vendor/bundle/", "log/", "tmp/"), (".bundle/", "vendor/bundle/", "log/", "tmp/")),
         "terraform": (
-            "Terraform",
-            [".terraform/", "*.tfstate", "*.tfstate.*", "crash.log", "crash.*.log"],
+            "Terraform local state, provider cache, and crash logs.",
+            (".terraform/", "*.tfstate", "*.tfstate.*", "crash.log", "crash.*.log"),
+            (".terraform/", "*.tfstate", "*.tfstate.*", "crash.log", "crash.*.log"),
         ),
-        "swift": ("Swift", [".build/", "DerivedData/"]),
+        "swift": ("Swift build output.", (".build/", "DerivedData/"), (".build/", "DerivedData/")),
     }
-    for ecosystem in sorted(ecosystems):
-        if ecosystem in ecosystem_patterns:
-            groups.append(ecosystem_patterns[ecosystem])
+    for ecosystem in sorted(detected):
+        policy = ecosystem_rules.get(ecosystem)
+        if policy is None:
+            continue
+        reason, git_rules, agent_rules = policy
+        for target, rules in ((".gitignore", git_rules), (ignore_name, agent_rules)):
+            groups.append(
+                RuleGroup(
+                    target,
+                    "ecosystem-specific",
+                    reason,
+                    tuple(unique(rules)),
+                    ecosystem,
+                    detected[ecosystem],
+                )
+            )
+    return groups
 
-    rendered: list[str] = [
-        "# Managed by /shrinkydink. Keep project-specific rules outside this block."
-    ]
-    for title, patterns in groups:
-        rendered.extend(["", f"# {title}", *unique(patterns)])
+
+def render_rule_groups(groups: Iterable[RuleGroup], target: str, managed_line: str) -> str:
+    rendered = [managed_line]
+    if target != ".gitignore":
+        rendered.append("# Syntax is the practical gitignore subset documented by this skill.")
+    for group in groups:
+        if group.target != target:
+            continue
+        label = f"{TERMINOLOGY['automatic'].capitalize()} ({group.classification})"
+        if group.ecosystem:
+            markers = ", ".join(display_path(marker) for marker in group.detection_markers)
+            markers = markers or "marker unavailable"
+            label += f" for {group.ecosystem}; detected by {markers}"
+        rendered.extend(["", f"# {label}", f"# {group.reason}", *group.rules])
     return "\n".join(rendered).strip()
+
+
+def gitignore_body(detections: Union[Iterable[EcosystemDetection], set[str]]) -> str:
+    groups = default_rule_groups(detections)
+    return render_rule_groups(
+        groups,
+        ".gitignore",
+        "# Managed by /shrinkydink. Keep project-specific rules outside this block.",
+    )
 
 
 def gitattributes_body() -> str:
@@ -458,89 +602,18 @@ def gitattributes_body() -> str:
 *.otf binary"""
 
 
-def agentsignore_body(ecosystems: set[str], ignore_name: str = ".agentsignore") -> str:
+def agentsignore_body(
+    detections: Union[Iterable[EcosystemDetection], set[str]],
+    ignore_name: str = ".agentsignore",
+) -> str:
     managed_line = "# Managed by /shrinkydink. Add repo-specific rules outside this block."
     if ignore_name != ".agentsignore":
         managed_line = (
             f"# Managed by /shrinkydink at {ignore_name}. "
             "Add repo-specific rules outside this block."
         )
-    patterns = [
-        managed_line,
-        "# Syntax is the practical gitignore subset documented by this skill.",
-        "",
-        "# Version-control internals and agent-local state",
-        ".git/",
-        ".claude/settings.local.json",
-        "CLAUDE.local.md",
-        ".agent-tools/shrinkydink/__pycache__/",
-        "",
-        "# Secrets: do not ingest these into model context",
-        ".env",
-        ".env.*",
-        "!.env.example",
-        "!.env.sample",
-        "!.env.template",
-        "*.pem",
-        "*.key",
-        "*.p12",
-        "*.pfx",
-        "",
-        "# Dependencies, caches, build products, and coverage",
-        "node_modules/",
-        "vendor/",
-        ".venv/",
-        "venv/",
-        "__pycache__/",
-        ".pytest_cache/",
-        ".mypy_cache/",
-        ".ruff_cache/",
-        ".tox/",
-        ".nox/",
-        ".gradle/",
-        ".cache/",
-        ".turbo/",
-        ".next/",
-        ".nuxt/",
-        ".svelte-kit/",
-        "target/",
-        "dist/",
-        "build/",
-        "out/",
-        "coverage/",
-        "htmlcov/",
-        "tmp/",
-        "temp/",
-        "*.log",
-        "",
-        "# Generated bundles and source maps",
-        "*.min.js",
-        "*.min.css",
-        "*.map",
-        "",
-        "# Binary databases, archives, and compiled artifacts",
-        "*.db",
-        "*.sqlite",
-        "*.sqlite3",
-        "*.zip",
-        "*.tar",
-        "*.tar.gz",
-        "*.tgz",
-        "*.7z",
-        "*.rar",
-        "*.jar",
-        "*.war",
-        "*.class",
-        "*.o",
-        "*.so",
-        "*.dylib",
-        "*.dll",
-        "*.exe",
-        "*.bin",
-    ]
-    if "terraform" in ecosystems:
-        patterns.extend(["", "# Terraform local state", ".terraform/", "*.tfstate", "*.tfstate.*"])
-    return "\n".join(patterns).strip()
+    groups = default_rule_groups(detections, ignore_name)
+    return render_rule_groups(groups, ignore_name, managed_line)
 
 
 def agents_md_body(threshold: int, ignore_name: str = ".agentsignore") -> str:
@@ -1114,22 +1187,124 @@ def runtime_asset(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def tracked_large_files(root: Path, threshold_kb: int) -> list[tuple[str, int]]:
+def tracked_paths(root: Path) -> list[TrackedPath]:
     result = run_git(root, "ls-files", "-z")
     if result.returncode != 0:
         return []
-    files: list[tuple[str, int]] = []
+    files: list[TrackedPath] = []
     for relative in result.stdout.split("\0"):
         if not relative:
             continue
         path = root / relative
         try:
-            size = path.stat().st_size
+            details = path.lstat()
         except OSError:
+            files.append(TrackedPath(relative, None, "unavailable"))
             continue
-        if size > threshold_kb * 1024:
-            files.append((relative, size))
-    return sorted(files, key=lambda item: item[1], reverse=True)
+        if stat.S_ISLNK(details.st_mode):
+            files.append(TrackedPath(relative, None, "symlink"))
+        elif stat.S_ISREG(details.st_mode):
+            files.append(TrackedPath(relative, details.st_size, "file"))
+        elif stat.S_ISDIR(details.st_mode):
+            files.append(TrackedPath(relative, None, "directory"))
+        else:
+            files.append(TrackedPath(relative, None, "other"))
+    return sorted(files, key=lambda item: item.path)
+
+
+def is_secret_like_path(relative: str) -> bool:
+    name = Path(relative).name.lower()
+    if name in {".env.example", ".env.sample", ".env.template"}:
+        return False
+    return name == ".env" or name.startswith(".env.") or Path(name).suffix in {
+        ".pem",
+        ".key",
+        ".p12",
+        ".pfx",
+    }
+
+
+def exact_ignore_rule(relative: str) -> Optional[str]:
+    if (
+        "\n" in relative
+        or "\r" in relative
+        or "\0" in relative
+        or any(0xDC80 <= ord(character) <= 0xDCFF for character in relative)
+    ):
+        return None
+    escaped = relative.replace("\\", "\\\\")
+    for character in ("*", "?", "[", "]"):
+        escaped = escaped.replace(character, f"\\{character}")
+    trailing_spaces = len(escaped) - len(escaped.rstrip(" "))
+    if trailing_spaces:
+        escaped = escaped[:-trailing_spaces] + "\\ " * trailing_spaces
+    return "/" + escaped
+
+
+def classify_tracked_paths(
+    paths: Iterable[TrackedPath],
+    threshold_kb: int,
+    ignore_name: str,
+) -> tuple[list[Recommendation], list[WarningItem]]:
+    recommendations: list[Recommendation] = []
+    warnings: list[WarningItem] = []
+    archive_suffixes = (".zip", ".tar", ".tar.gz", ".tgz", ".7z", ".rar", ".jar", ".war")
+    binary_suffixes = (".bin", ".o", ".so", ".dylib", ".dll", ".exe", ".class")
+    database_suffixes = (".db", ".sqlite", ".sqlite3")
+    for item in paths:
+        lowered = item.path.lower()
+        categories: list[str] = []
+        reasons: list[str] = []
+        if item.size_bytes is not None and item.size_bytes > threshold_kb * 1024:
+            categories.append("large-file")
+            reasons.append(f"tracked file is larger than {threshold_kb} KiB")
+        if lowered.endswith(database_suffixes):
+            categories.append("database")
+            reasons.append("database files are often generated or costly context")
+        if lowered.endswith(archive_suffixes):
+            categories.append("archive-package")
+            reasons.append("archives and packages are usually better represented by source files")
+        if lowered.endswith(".map"):
+            categories.append("source-map")
+            reasons.append("source maps are generated artifacts when their source is present")
+        if lowered.endswith((".min.js", ".min.css")):
+            categories.append("generated-bundle")
+            reasons.append("minified bundles are generated artifacts when source is present")
+        if lowered.endswith(binary_suffixes):
+            categories.append("compiled-binary")
+            reasons.append("compiled binary files are usually generated artifacts")
+        components = {part.lower() for part in Path(item.path).parts[:-1]}
+        ambiguous = sorted(components & {"build", "out", "vendor"})
+        if ambiguous:
+            categories.append("ambiguous-output-path")
+            reasons.append(f"path is under ambiguous output directory `{ambiguous[0]}`")
+        secret_like = is_secret_like_path(item.path)
+        if secret_like:
+            categories.append("secret-like-filename")
+            reasons.append("filename matches the conservative local-secret policy")
+        if not categories:
+            continue
+        recommendation = Recommendation(
+            path=item.path,
+            categories=tuple(categories),
+            reasons=tuple(reasons),
+            size_bytes=item.size_bytes,
+            agentsignore_path=ignore_name,
+            suggested_rule=exact_ignore_rule(item.path),
+        )
+        recommendations.append(recommendation)
+        if secret_like:
+            warnings.append(
+                WarningItem(
+                    "tracked-secret-like-path",
+                    f"Tracked path {display_path(item.path)} matches the conservative secret filename policy. "
+                    "`.gitignore` does not untrack a file or remove it from Git history. Remove the "
+                    "credential from the repository and history as appropriate for your incident "
+                    "process, and rotate the credential; Shrinkydink did not read its contents.",
+                    "high",
+                )
+            )
+    return recommendations, warnings
 
 
 def render_diff(change: Change, root: Path) -> str:
@@ -1152,10 +1327,19 @@ def render_diff(change: Change, root: Path) -> str:
     )
 
 
-def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list[WarningItem], set[str], dict[str, Any]]:
+def build_plan(
+    root: Path, args: argparse.Namespace
+) -> tuple[
+    list[Change],
+    list[WarningItem],
+    list[EcosystemDetection],
+    dict[str, Any],
+    list[RuleGroup],
+    list[Recommendation],
+]:
     changes: list[Change] = []
     warnings: list[WarningItem] = []
-    ecosystems = detect_ecosystems(root)
+    detections = detect_ecosystems(root)
 
     def destination(relative: Path) -> Optional[Path]:
         path, error = resolve_managed_destination(root, relative)
@@ -1183,11 +1367,12 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
 
     threshold = effective["context_warning_percent"]
     ignore_name = Path(str(effective["agentsignore"])).as_posix()
+    rule_groups = default_rule_groups(detections, ignore_name)
 
     text_targets = [
         (
             Path(".gitignore"),
-            gitignore_body(ecosystems),
+            gitignore_body(detections),
             TEXT_START,
             TEXT_END,
             "Validated repository ignores",
@@ -1203,7 +1388,7 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
         ),
         (
             Path(ignore_name),
-            agentsignore_body(ecosystems, ignore_name),
+            agentsignore_body(detections, ignore_name),
             TEXT_START,
             TEXT_END,
             "Created agent-specific context exclusions",
@@ -1239,6 +1424,34 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
         except (OSError, UnicodeDecodeError) as exc:
             changes.append(conflict(path, f"Cannot read text file safely: {exc}"))
             continue
+        if relative == Path(".gitattributes") and existing.strip() and TEXT_START not in existing:
+            warnings.append(
+                WarningItem(
+                    "gitattributes-policy",
+                    "The established user-owned `.gitattributes` has no Shrinkydink managed block. "
+                    "The proposed attributes control Git normalization and diff behavior, not LLM "
+                    "access, and applying them may renormalize files when they are later staged. "
+                    "Review the proposed diff before `--apply`; later user rules retain precedence.",
+                    "high",
+                )
+            )
+        if relative == Path(ignore_name) and TEXT_START in existing:
+            owned_body = managed_block_body(existing)
+            legacy_headers = (
+                "# Dependencies, caches, build products, and coverage",
+                "# Binary databases, archives, and compiled artifacts",
+            )
+            if any(header in owned_body for header in legacy_headers):
+                warnings.append(
+                    WarningItem(
+                        "agentsignore-policy-upgrade",
+                        f"The managed `{ignore_name}` block uses the former broad automatic policy. "
+                        "This audit proposes narrower automatic defaults; add any intentionally "
+                        "retained rules outside the managed block before applying. User-owned rules "
+                        "are preserved and keep final precedence.",
+                        "high",
+                    )
+                )
         try:
             new = merge_managed_block(existing, body, start, end, placement)
             changes.append(classify_change(path, new, note))
@@ -1315,17 +1528,10 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
                 )
 
     large_threshold = int(effective.get("large_file_warning_kb", DEFAULT_LARGE_FILE_WARNING_KB))
-    large_files = tracked_large_files(root, large_threshold)
-    if large_files:
-        sample = ", ".join(f"{path} ({size / 1024:.0f} KiB)" for path, size in large_files[:8])
-        if len(large_files) > 8:
-            sample += f", plus {len(large_files) - 8} more"
-        warnings.append(
-            WarningItem(
-                "large-files",
-                f"Tracked files above {large_threshold} KiB can consume context quickly: {sample}.",
-            )
-        )
+    recommendations, diagnostic_warnings = classify_tracked_paths(
+        tracked_paths(root), large_threshold, ignore_name
+    )
+    warnings.extend(diagnostic_warnings)
 
     if not (root / ".git").exists():
         warnings.append(
@@ -1335,7 +1541,7 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
             )
         )
 
-    return changes, warnings, ecosystems, effective
+    return changes, warnings, detections, effective, rule_groups, recommendations
 
 
 def mark_transaction_aborted(changes: list[Change], reason: str) -> None:
@@ -1556,31 +1762,58 @@ def print_text_report(
     mode: str,
     changes: list[Change],
     warnings: list[WarningItem],
-    ecosystems: set[str],
+    detections: list[EcosystemDetection],
+    recommendations: list[Recommendation],
     effective: dict[str, Any],
     show_diff: bool,
 ) -> None:
     print(f"Shrinkydink {mode}: {root}")
-    print(f"Detected ecosystems: {', '.join(sorted(ecosystems)) or 'none'}")
+    if detections:
+        print("Detected ecosystems:")
+        for detection in detections:
+            markers = ", ".join(display_path(marker) for marker in detection.markers)
+            print(f"- {detection.name}: {markers}")
+    else:
+        print("Detected ecosystems: none")
     print(
         "Policy: "
         f"ignore_mode={effective.get('ignore_mode')}, "
         f"context_warning_percent={effective.get('context_warning_percent')}, "
         f"large_file_warning_kb={effective.get('large_file_warning_kb')}"
     )
-    print()
     labels = {"create": "CREATE", "update": "UPDATE", "ok": "OK", "conflict": "CONFLICT"}
-    for change in changes:
-        print(f"{labels.get(change.status, change.status.upper()):8} {relative_path(change.path, root)}")
-        if change.note:
-            print(f"         {change.note}")
-        print(f"         Treatment: {change.treatment}")
-        if change.integration:
-            print(f"         Activation: {change.integration}")
+    sections = (
+        ("Planned changes", [change for change in changes if change.changed]),
+        ("Conflicts", [change for change in changes if change.status == "conflict"]),
+        ("Unchanged", [change for change in changes if change.status == "ok"]),
+    )
+    for title, items in sections:
+        if not items:
+            continue
+        print(f"\n{title}:")
+        for change in items:
+            print(f"{labels.get(change.status, change.status.upper()):8} {relative_path(change.path, root)}")
+            if change.note:
+                print(f"         {change.note}")
+            treatment_term = {
+                "shared-commit": TERMINOLOGY["shared"],
+                "local-ignore": TERMINOLOGY["local"],
+            }.get(change.treatment, change.treatment)
+            print(f"         Treatment: {change.treatment} ({treatment_term})")
+            if change.integration:
+                print(f"         Activation: {change.integration}")
     if warnings:
-        print("\nWarnings:")
+        print(f"\n{TERMINOLOGY['warning'].title()}:")
         for item in warnings:
-            print(f"- [{item.kind}] {item.message}")
+            print(f"- [{item.severity}:{item.kind}] {item.message}")
+    if recommendations:
+        print(f"\n{TERMINOLOGY['recommendation'].title()}:")
+        for item in recommendations:
+            size = "unknown size" if item.size_bytes is None else f"{item.size_bytes} bytes"
+            action = item.suggested_rule or "no line-oriented rule is available for this path"
+            print(f"- {display_path(item.path)} ({size}; {', '.join(item.categories)})")
+            print(f"  Reason: {'; '.join(item.reasons)}.")
+            print(f"  Suggested `{item.agentsignore_path}` rule: `{action}`")
 
     if show_diff:
         diffs = [render_diff(change, root) for change in changes if change.changed]
@@ -1616,13 +1849,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--ignore-mode",
         choices=("warn", "deny", "off"),
-        help=f".agentsignore hook behavior (default: {DEFAULT_IGNORE_MODE})",
+        help=(
+            f".agentsignore warnings, {TERMINOLOGY['denial']}, or disabled hook behavior "
+            f"(default: {DEFAULT_IGNORE_MODE})"
+        ),
     )
     parser.add_argument(
         "--large-file-warning-kb",
         type=int,
         metavar="KB",
-        help=f"Warn about larger tracked files (default: {DEFAULT_LARGE_FILE_WARNING_KB})",
+        help=(
+            "Recommend review of larger tracked files above this threshold "
+            f"(default: {DEFAULT_LARGE_FILE_WARNING_KB})"
+        ),
     )
     parser.add_argument("--no-claude", action="store_true", help="Do not manage Claude files")
     parser.add_argument("--no-codex", action="store_true", help="Do not manage Codex files")
@@ -1716,7 +1955,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     mode = "apply" if args.apply else "check" if args.check else "audit"
     try:
-        changes, warnings, ecosystems, effective = build_plan(root, args)
+        changes, warnings, detections, effective, rule_groups, recommendations = build_plan(root, args)
     except (OSError, ValueError, KeyError) as exc:
         print(f"shrinkydink: failed to build plan: {exc}", file=sys.stderr)
         return 2
@@ -1737,24 +1976,30 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     show_diff = not args.no_diff and not args.apply
     if args.json:
+        change_records = [
+            {
+                "path": relative_path(change.path, root),
+                "status": change.status,
+                "note": change.note,
+                "treatment": change.treatment,
+                "integration": change.integration,
+                "old": change.old if show_diff and change.changed and change.treatment != "local-ignore" else None,
+                "new": change.new if show_diff and change.changed and change.treatment != "local-ignore" else None,
+            }
+            for change in changes
+        ]
         payload = {
+            "report_version": REPORT_VERSION,
             "repo": str(root),
             "mode": mode,
-            "ecosystems": sorted(ecosystems),
+            "ecosystems": [detection.name for detection in detections],
+            "ecosystem_detections": [asdict(detection) for detection in detections],
+            "default_rule_groups": [asdict(group) for group in rule_groups],
             "settings": effective,
-            "changes": [
-                {
-                    "path": relative_path(change.path, root),
-                    "status": change.status,
-                    "note": change.note,
-                    "treatment": change.treatment,
-                    "integration": change.integration,
-                    "old": change.old if show_diff and change.changed and change.treatment != "local-ignore" else None,
-                    "new": change.new if show_diff and change.changed and change.treatment != "local-ignore" else None,
-                }
-                for change in changes
-            ],
+            "changes": change_records,
+            "conflicts": [record for record in change_records if record["status"] == "conflict"],
             "warnings": [asdict(item) for item in warnings],
+            "recommendations": [asdict(item) for item in recommendations],
         }
         print(json.dumps(payload, indent=2))
     else:
@@ -1763,7 +2008,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             mode,
             changes,
             warnings,
-            ecosystems,
+            detections,
+            recommendations,
             effective,
             show_diff=show_diff,
         )

@@ -33,6 +33,7 @@ Use the bundled deterministic script to audit or configure one repository withou
    ```
 
 6. Summarize created, updated, preserved, and conflicted files. State that `.agentsignore` is a cross-agent convention enforced best-effort through instructions and lifecycle hooks, not a universal native standard.
+7. Report ecosystem marker evidence, high-severity warnings, and exact-path recommendations separately. Recommendations are review-only and must never be copied into the managed block automatically.
 
 ## Safety and preservation rules
 
@@ -44,6 +45,8 @@ Use the bundled deterministic script to audit or configure one repository withou
 - Preserve an existing Claude status line or Codex status line that the script cannot safely compose with. Show the manual integration needed.
 - Default `.agentsignore` to `warn`. Use `deny` only when the user explicitly requests hard blocking and understands that intentional exceptions require changing `.shrinkydink.json`.
 - Do not add broad ignores for source, lockfiles, fixtures, migrations, documentation, images, or PDFs merely to make the repository smaller.
+- Keep universal `.agentsignore` automatic defaults limited to Git internals, agent-local state, obvious local environment files, and private-key/certificate extensions. Add dependency, cache, and generated-output rules only for detected ecosystems; treat ambiguous tracked paths as exact recommendations.
+- Classify tracked paths from Git filenames and filesystem metadata only. Never open candidate files for size, binary, generated, database, archive, or secret-like diagnostics.
 - Do not remove tracked files, run `git rm --cached`, rewrite Git history, or commit changes unless explicitly requested.
 - Treat hook enforcement as a guardrail. Direct prompt attachments, Claude `@` imports, hosted tools, shell indirection, and specialized tools may bypass it.
 
@@ -67,11 +70,11 @@ Read [references/configuration.md](references/configuration.md) for the generate
 
 A successful setup should leave:
 
-- stack-aware `.gitignore` rules and conservative `.gitattributes` normalization;
+- classified high-confidence and detected-ecosystem `.gitignore` rules plus prominently reviewed `.gitattributes` Git normalization;
 - shared context guidance in `AGENTS.md`, imported by `CLAUDE.md`;
 - a configurable `.agentsignore` plus lightweight Python guard scripts;
 - committed Claude project `PreToolUse`, conservative native secret-path denies, and exact context-percentage status warnings when no prior status line conflicts;
 - Codex project hooks, a visible `context-remaining` footer, and a warning before compaction;
-- a committed `.shrinkydink.json` policy file and a warning for unusually large tracked files;
+- a committed `.shrinkydink.json` policy file, stable versioned report fields, metadata-only exact-path recommendations, and high-severity tracked-secret filename warnings;
 - explicit shared/local treatment and client activation notes in audit output;
 - a second `--check` run with no drift.

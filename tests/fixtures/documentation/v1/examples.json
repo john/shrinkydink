@@ -1,0 +1,14 @@
+{
+  "canonical_commands": [
+    "python3 scripts/shrinkydink.py --repo .",
+    "python3 scripts/shrinkydink.py --repo . --apply",
+    "python3 scripts/shrinkydink.py --repo . --check --no-diff",
+    "python3 scripts/shrinkydink.py --check-agentsignore-conformance"
+  ],
+  "scenarios": {
+    "new": [[], ["--apply"], ["--check", "--no-diff"]],
+    "established": [[], ["--apply"], ["--check", "--no-diff"]],
+    "large_fixture": [["--json", "--large-file-warning-kb", "1"]],
+    "upgrade": [[], ["--apply"], ["--check", "--no-diff"]]
+  }
+}
