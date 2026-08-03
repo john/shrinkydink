@@ -1,4 +1,0 @@
-# Shrinkydink
-A set of utilities to set up repositories that are compact, safer, and more token-efficient.
-
-Introduces the concept of the .agentsignore file, intended to reduce context bloat by specifying content that should not be included in LLM calls.
