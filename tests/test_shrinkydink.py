@@ -325,8 +325,9 @@ class ShrinkydinkTests(unittest.TestCase):
 
             self.assertEqual(apply_code, 0, output)
             self.assertEqual(stat.S_IMODE(gitignore.stat().st_mode), 0o640)
-            settings = root / ".claude" / "settings.local.json"
-            self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o600)
+            settings = root / ".claude" / "settings.json"
+            self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o644)
+            self.assertFalse((root / ".claude" / "settings.local.json").exists())
             for name in (
                 "guard.py",
                 "agentsignore.py",

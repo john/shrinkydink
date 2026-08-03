@@ -1,0 +1,75 @@
+{
+  "empty": {},
+  "unrelated": {
+    "claude": {
+      "permissions": {
+        "allow": ["Read(./docs/**)"],
+        "deny": ["Read(./private/**)"]
+      },
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "^Read$",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python3 tools/team_guard.py"
+              }
+            ]
+          }
+        ]
+      },
+      "statusLine": {
+        "type": "command",
+        "command": "python3 tools/team_status.py"
+      }
+    },
+    "codex": {
+      "description": "Team hooks",
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "^Shell$",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python3 tools/team_hook.py"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "managed_local": {
+    "$schema": "https://json.schemastore.org/claude-code-settings.json",
+    "respectGitignore": true,
+    "userSetting": "keep-me",
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "^(Read|Glob|Grep|Edit|Write|Bash)$",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "python3 \"${CLAUDE_PROJECT_DIR}/.agent-tools/shrinkydink/guard.py\"",
+              "timeout": 5,
+              "statusMessage": "Checking .agentsignore"
+            }
+          ]
+        }
+      ]
+    },
+    "statusLine": {
+      "type": "command",
+      "command": "python3 \"${CLAUDE_PROJECT_DIR}/.agent-tools/shrinkydink/claude_status.py\"",
+      "padding": 0
+    }
+  },
+  "noncanonical_local": "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"^Read$\",\"hooks\":[{\"type\":\"command\",\"command\":\"python3 ${CLAUDE_PROJECT_DIR}/.agent-tools/shrinkydink/guard.py\"}]}]},\"personal\":true}\n",
+  "commands": {
+    "scripts": ["guard.py", "codex_precompact.py"],
+    "windows_requires": ["git rev-parse --show-toplevel", "Join-Path $root", "powershell.exe", "py -3"],
+    "posix_requires": ["git rev-parse --show-toplevel", ".agent-tools/shrinkydink"]
+  }
+}

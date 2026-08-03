@@ -40,7 +40,8 @@ consulted when another path is configured.
 | `CLAUDE.md` | Imports `AGENTS.md` and adds Claude-specific notes | Commit |
 | `.shrinkydink.json` | Shared policy and thresholds | Commit |
 | `.agent-tools/shrinkydink/*.py` | Runtime guard and warning helpers | Commit |
-| `.claude/settings.local.json` | Local Claude hooks and status line | Do not commit; shrinkydink adds it to `.gitignore` |
+| `.claude/settings.json` | Shared Claude hook, safe native deny rules, and optional status line | Commit |
+| `.claude/settings.local.json` | Optional personal Claude overrides; exact legacy Shrinkydink entries may be migrated | Do not commit; shrinkydink adds it to `.gitignore` |
 | `.codex/hooks.json` | Project Codex PreToolUse and PreCompact hooks | Commit |
 | `.codex/config.toml` | Ensures Codex shows `context-remaining` | Commit |
 
@@ -67,7 +68,7 @@ For order-sensitive files—`.gitignore`, `.gitattributes`, and the configured
 content. Later user-maintained rules therefore retain final precedence,
 including negations and attribute overrides.
 
-Before changing `.codex/config.toml`, shrinkydink validates existing TOML when the running Python includes `tomllib` (Python 3.11+). It also validates the generated result. On older Python versions, it emits a warning and preserves its conservative marker-based editing behavior.
+Before planning writes, shrinkydink validates generated Claude settings and Codex hooks after a JSON round trip. Before changing `.codex/config.toml`, it validates existing TOML when the running Python includes `tomllib` (Python 3.11+), validates the generated result, and independently checks its managed inline-hook fragment. On older Python versions, it emits a warning and preserves its conservative marker-based editing behavior.
 
 Shrinkydink refuses to replace symbolic links and rejects a managed destination
 when an existing parent component resolves outside the selected repository.
@@ -75,9 +76,10 @@ Apply performs a complete preflight and stages every new body before replacing
 any destination. If preflight finds a conflict, nothing is written. If a
 replacement fails, destinations already changed by that run are restored unless
 one was independently changed after staging, in which case it is left alone and
-reported. Newly created `.claude/settings.local.json` files use owner-only
-permissions where the filesystem supports POSIX modes; existing file modes are
-retained.
+reported. Shrinkydink never creates `.claude/settings.local.json`. When that
+file exists, unrelated or noncanonical content is preserved byte-for-byte. Only
+exact Shrinkydink-owned hook and status-line signatures in canonical JSON are
+removed, and the existing file mode is retained.
 
 ## `.agentsignore` syntax
 
@@ -106,10 +108,12 @@ file named `build`.
 Audit is the default. Audit and check perform no filesystem writes, including
 temporary-file creation in the target repository.
 
-JSON audit and check reports include `old` and `new` content for create and
-update entries when diffs are enabled. `--apply` and `--no-diff` reports retain
-those keys with `null` values so write operations and explicitly suppressed
-diffs do not expose file content.
+JSON audit and check reports include additive `treatment` and `integration`
+fields that distinguish committed shared artifacts, ignored local artifacts,
+and client trust/reload steps. They include `old` and `new` content for create
+and update entries when diffs are enabled. `--apply` and `--no-diff` reports
+retain those keys with `null` values so write operations and explicitly
+suppressed diffs do not expose file content.
 
 ## Suggested CI check
 

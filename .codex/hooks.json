@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/guard.py\"",
-            "commandWindows": "py -3 \".agent-tools\\shrinkydink\\guard.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & py -3 (Join-Path $root '.agent-tools\\shrinkydink\\guard.py')\"",
             "timeout": 5,
             "statusMessage": "Checking .agentsignore"
           }
@@ -22,7 +22,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.agent-tools/shrinkydink/codex_precompact.py\"",
-            "commandWindows": "py -3 \".agent-tools\\shrinkydink\\codex_precompact.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$root = (& git rev-parse --show-toplevel).Trim(); & py -3 (Join-Path $root '.agent-tools\\shrinkydink\\codex_precompact.py')\"",
             "timeout": 5,
             "statusMessage": "Checkpointing context"
           }

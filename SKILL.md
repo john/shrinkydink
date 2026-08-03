@@ -1,6 +1,6 @@
 ---
 name: shrinkydink
-description: Audit and configure a software repository for compact, safer coding-agent context. Use when setting up or validating repository hygiene for Claude Code, OpenAI Codex, or other AGENTS.md-aware agents; creating or repairing .gitignore, .gitattributes, AGENTS.md, CLAUDE.md, .agentsignore, Claude local settings, Codex hooks, or context-usage warnings; reducing accidental ingestion of dependencies, generated files, secrets, and large artifacts; or adding a repeatable CI check for agent-context configuration.
+description: Audit and configure a software repository for compact, safer coding-agent context. Use when setting up or validating repository hygiene for Claude Code, OpenAI Codex, or other AGENTS.md-aware agents; creating or repairing .gitignore, .gitattributes, AGENTS.md, CLAUDE.md, .agentsignore, Claude project settings, Codex hooks, or context-usage warnings; reducing accidental ingestion of dependencies, generated files, secrets, and large artifacts; or adding a repeatable CI check for agent-context configuration.
 ---
 
 # Shrinkydink
@@ -16,7 +16,7 @@ Use the bundled deterministic script to audit or configure one repository withou
    python3 <skill-directory>/scripts/shrinkydink.py --repo <repo-root>
    ```
 
-3. Review conflicts and warnings before writing. Preserve malformed JSON, unmatched managed markers, explicit status-line choices, and unusual existing hook structures; apply aborts before writing when any destination conflicts.
+3. Review conflicts and warnings before writing. Preserve malformed JSON, unmatched managed markers, explicit status-line choices, unusual existing hook structures, and personal Claude local settings; apply aborts before writing when any shared destination conflicts.
 4. When the user requested setup or repair and the audit has no material conflicts, apply the complete validated change set transactionally:
 
    ```bash
@@ -39,8 +39,8 @@ Use the bundled deterministic script to audit or configure one repository withou
 - Modify text files only inside shrinkydink-managed blocks. Keep all content outside those blocks byte-for-byte except unavoidable final-newline normalization.
 - Prepend managed blocks in order-sensitive ignore and attributes files so later repository-owned rules retain precedence.
 - Merge JSON objects and hook arrays structurally. Never replace an invalid JSON file or a non-object hook structure.
-- Validate existing and generated Codex TOML when `tomllib` is available; preserve invalid TOML and report a conflict.
-- Refuse to replace symbolic links and reject managed paths whose existing parent components resolve outside the repository. Preserve existing file modes and use owner-only permissions for newly created Claude local settings where supported.
+- Validate generated Claude and Codex JSON structurally before it enters the transaction. Validate existing and generated Codex TOML when `tomllib` is available, and always validate the managed inline-hook fragment; preserve invalid TOML and report a conflict.
+- Refuse to replace symbolic links and reject managed paths whose existing parent components resolve outside the repository. Preserve existing file modes. Do not create Claude local settings; migrate only exact Shrinkydink-owned local hook or status entries when canonical formatting makes the rewrite safe.
 - Preserve an existing Claude status line or Codex status line that the script cannot safely compose with. Show the manual integration needed.
 - Default `.agentsignore` to `warn`. Use `deny` only when the user explicitly requests hard blocking and understands that intentional exceptions require changing `.shrinkydink.json`.
 - Do not add broad ignores for source, lockfiles, fixtures, migrations, documentation, images, or PDFs merely to make the repository smaller.
@@ -70,7 +70,8 @@ A successful setup should leave:
 - stack-aware `.gitignore` rules and conservative `.gitattributes` normalization;
 - shared context guidance in `AGENTS.md`, imported by `CLAUDE.md`;
 - a configurable `.agentsignore` plus lightweight Python guard scripts;
-- Claude local PreToolUse and exact context-percentage status warnings when no prior status line conflicts;
+- committed Claude project `PreToolUse`, conservative native secret-path denies, and exact context-percentage status warnings when no prior status line conflicts;
 - Codex project hooks, a visible `context-remaining` footer, and a warning before compaction;
 - a committed `.shrinkydink.json` policy file and a warning for unusually large tracked files;
+- explicit shared/local treatment and client activation notes in audit output;
 - a second `--check` run with no drift.
