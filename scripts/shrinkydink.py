@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -46,6 +47,7 @@ class Change:
     note: str
     old: Optional[str] = None
     new: Optional[str] = None
+    mode: Optional[int] = None
 
     @property
     def changed(self) -> bool:
@@ -56,6 +58,25 @@ class Change:
 class WarningItem:
     kind: str
     message: str
+
+
+@dataclass
+class StagedChange:
+    change: Change
+    path: Path
+    temp_path: Path
+    prior_bytes: Optional[bytes]
+    prior_mode: Optional[int]
+    written_bytes: bytes
+    written_hash: str
+
+
+@dataclass
+class ApplyResult:
+    warnings: list[WarningItem]
+    completed: bool
+    restored: list[str]
+    rollback_skipped: list[str]
 
 
 def run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -80,6 +101,60 @@ def resolve_repo(path: str) -> Path:
     if candidate.parent == candidate:
         raise ValueError("Refusing to manage a filesystem root")
     return candidate
+
+
+def path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_managed_destination(
+    root: Path, relative: Path
+) -> tuple[Optional[Path], Optional[str]]:
+    """Validate one repository-relative destination without writing to it."""
+    if relative.is_absolute() or ".." in relative.parts:
+        return None, f"Managed destination must stay within the repository: {relative}"
+
+    root_real = root.resolve()
+    destination = root / relative
+    current = root
+    for part in relative.parts:
+        if part in {"", "."}:
+            continue
+        current = current / part
+        try:
+            is_link = current.is_symlink()
+            exists = current.exists()
+            if is_link or exists:
+                resolved = current.resolve(strict=False)
+                if not path_within(resolved, root_real):
+                    kind = "symbolic link component" if is_link else "path component"
+                    shown = current.relative_to(root).as_posix()
+                    return (
+                        None,
+                        f"Unsafe managed destination `{relative.as_posix()}`: {kind} "
+                        f"`{shown}` resolves outside the repository",
+                    )
+            if not exists and not is_link:
+                break
+        except OSError as exc:
+            shown = current.relative_to(root).as_posix()
+            return None, f"Cannot validate managed destination component `{shown}`: {exc}"
+
+    try:
+        parent_real = destination.parent.resolve(strict=False)
+    except OSError as exc:
+        return None, f"Cannot validate managed destination `{relative.as_posix()}`: {exc}"
+    if not path_within(parent_real, root_real):
+        return (
+            None,
+            f"Unsafe managed destination `{relative.as_posix()}`: its parent resolves "
+            "outside the repository",
+        )
+    return destination, None
 
 
 def read_text(path: Path) -> str:
@@ -379,9 +454,15 @@ def gitattributes_body() -> str:
 *.otf binary"""
 
 
-def agentsignore_body(ecosystems: set[str]) -> str:
+def agentsignore_body(ecosystems: set[str], ignore_name: str = ".agentsignore") -> str:
+    managed_line = "# Managed by /shrinkydink. Add repo-specific rules outside this block."
+    if ignore_name != ".agentsignore":
+        managed_line = (
+            f"# Managed by /shrinkydink at {ignore_name}. "
+            "Add repo-specific rules outside this block."
+        )
     patterns = [
-        "# Managed by /shrinkydink. Add repo-specific rules outside this block.",
+        managed_line,
         "# Syntax is the practical gitignore subset documented by this skill.",
         "",
         "# Version-control internals and agent-local state",
@@ -458,26 +539,26 @@ def agentsignore_body(ecosystems: set[str]) -> str:
     return "\n".join(patterns).strip()
 
 
-def agents_md_body(threshold: int) -> str:
+def agents_md_body(threshold: int, ignore_name: str = ".agentsignore") -> str:
     remaining = 100 - threshold
     return f"""## Repository context hygiene
 
-- Treat `.agentsignore` as an agent-specific exclusion list using gitignore-style patterns. Do not read, search, summarize, index, or attach matching content unless the user explicitly requests it or it is indispensable to the task.
+- Treat `{ignore_name}` as an agent-specific exclusion list using gitignore-style patterns. Do not read, search, summarize, index, or attach matching content unless the user explicitly requests it or it is indispensable to the task.
 - In `warn` mode, an explicit user request may justify a documented exception. In `deny` mode, stop and ask the user to change `.shrinkydink.json` to `warn` before accessing a matched path.
 - When an exception is necessary, explain why and inspect the narrowest possible file, range, or command output. Never reveal secret values from ignored files.
 - Prefer targeted symbol search, path-scoped search, and bounded reads over recursive repository ingestion. Summarize discoveries with exact file paths and symbols, then discard bulky raw output.
 - Do not load generated files, dependency trees, caches, archives, databases, source maps, or minified bundles when source files or targeted queries are available.
 - When the interface reports context usage at or above {threshold}% ({remaining}% remaining), warn the user and recommend checkpointing work and starting a new session at the next clean boundary.
 - Before a new session, leave a compact handoff containing: objective, key decisions, changed files, verification performed, unresolved issues, and the next command or action.
-- Treat `.agentsignore` hooks as guardrails, not proof of isolation. Follow these rules even when a tool path bypasses hooks."""
+- Treat `{ignore_name}` hooks as guardrails, not proof of isolation. Follow these rules even when a tool path bypasses hooks."""
 
 
-def claude_md_body() -> str:
+def claude_md_body(ignore_name: str = ".agentsignore") -> str:
     return """@AGENTS.md
 
 ## Claude Code integration
 
-The shared repository instructions are imported from `AGENTS.md`. Local `.agentsignore` guard and context-status hooks are configured in `.claude/settings.local.json` when that file can be merged safely. Treat hook warnings as instructions to narrow the operation; an explicit user request may justify a documented exception when `ignore_mode` is `warn`."""
+The shared repository instructions are imported from `AGENTS.md`. Local `{ignore_name}` guard and context-status hooks are configured in `.claude/settings.local.json` when that file can be merged safely. Treat hook warnings as instructions to narrow the operation; an explicit user request may justify a documented exception when `ignore_mode` is `warn`.""".format(ignore_name=ignore_name)
 
 
 def desired_config(existing: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -550,8 +631,7 @@ def append_hook(
     return None
 
 
-def plan_claude_settings(root: Path) -> tuple[Change, list[WarningItem]]:
-    path = root / ".claude" / "settings.local.json"
+def plan_claude_settings(path: Path) -> tuple[Change, list[WarningItem]]:
     settings, error = load_json_object(path)
     warnings: list[WarningItem] = []
     if error:
@@ -603,8 +683,7 @@ def plan_claude_settings(root: Path) -> tuple[Change, list[WarningItem]]:
     return classify_change(path, json_text(settings), "Merged Claude local settings"), warnings
 
 
-def plan_codex_hooks_json(root: Path) -> Change:
-    path = root / ".codex" / "hooks.json"
+def plan_codex_hooks_json(path: Path) -> Change:
     settings, error = load_json_object(path)
     if error:
         return conflict(path, f"Cannot merge Codex hooks safely: {error}")
@@ -716,8 +795,7 @@ def ensure_codex_status_line(existing: str) -> tuple[str, Optional[str]]:
     return normalized.rstrip() + "\n", None
 
 
-def plan_codex_config(root: Path, use_inline_hooks: bool) -> tuple[Change, list[WarningItem]]:
-    path = root / ".codex" / "config.toml"
+def plan_codex_config(path: Path, use_inline_hooks: bool) -> tuple[Change, list[WarningItem]]:
     existing = read_text(path)
     warnings: list[WarningItem] = []
     if existing and tomllib is not None:
@@ -803,39 +881,29 @@ def render_diff(change: Change, root: Path) -> str:
     )
 
 
-def atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        mode = stat.S_IMODE(path.stat().st_mode)
-    elif path.name == "settings.local.json":
-        mode = 0o600
-    elif content.startswith("#!/usr/bin/env python3"):
-        mode = 0o755
-    else:
-        mode = 0o644
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            handle.write(content)
-        os.chmod(temp_name, mode)
-        os.replace(temp_name, path)
-    finally:
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-
-
 def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list[WarningItem], set[str], dict[str, Any]]:
     changes: list[Change] = []
     warnings: list[WarningItem] = []
     ecosystems = detect_ecosystems(root)
 
-    config_path = root / ".shrinkydink.json"
-    config, config_error = load_json_object(config_path)
+    def destination(relative: Path) -> Optional[Path]:
+        path, error = resolve_managed_destination(root, relative)
+        if error:
+            changes.append(
+                Change(path=str(root / relative), status="conflict", note=error)
+            )
+            return None
+        return path
+
+    config_path = destination(Path(".shrinkydink.json"))
+    config, config_error = ({}, None)
+    if config_path is not None:
+        config, config_error = load_json_object(config_path)
     effective = desired_config(config if not config_error else {}, args)
     config_validation = validate_config(effective)
-    if config_error or config_validation:
+    if config_path is None:
+        effective = desired_config({}, args)
+    elif config_error or config_validation:
         details = config_error or "; ".join(config_validation)
         changes.append(conflict(config_path, f"Cannot merge shrinkydink configuration: {details}"))
         effective = desired_config({}, args)
@@ -843,10 +911,11 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
         changes.append(classify_change(config_path, json_text(effective), "Repository settings"))
 
     threshold = effective["context_warning_percent"]
+    ignore_name = Path(str(effective["agentsignore"])).as_posix()
 
     text_targets = [
         (
-            root / ".gitignore",
+            Path(".gitignore"),
             gitignore_body(ecosystems),
             TEXT_START,
             TEXT_END,
@@ -854,7 +923,7 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
             "prepend",
         ),
         (
-            root / ".gitattributes",
+            Path(".gitattributes"),
             gitattributes_body(),
             TEXT_START,
             TEXT_END,
@@ -862,16 +931,16 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
             "prepend",
         ),
         (
-            root / ".agentsignore",
-            agentsignore_body(ecosystems),
+            Path(ignore_name),
+            agentsignore_body(ecosystems, ignore_name),
             TEXT_START,
             TEXT_END,
             "Created agent-specific context exclusions",
             "prepend",
         ),
         (
-            root / "AGENTS.md",
-            agents_md_body(threshold),
+            Path("AGENTS.md"),
+            agents_md_body(threshold, ignore_name),
             MD_START,
             MD_END,
             "Shared cross-agent instructions",
@@ -881,8 +950,8 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
     if not args.no_claude:
         text_targets.append(
             (
-                root / "CLAUDE.md",
-                claude_md_body(),
+                Path("CLAUDE.md"),
+                claude_md_body(ignore_name),
                 MD_START,
                 MD_END,
                 "Claude imports shared AGENTS.md instructions",
@@ -890,7 +959,10 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
             )
         )
 
-    for path, body, start, end, note, placement in text_targets:
+    for relative, body, start, end, note, placement in text_targets:
+        path = destination(relative)
+        if path is None:
+            continue
         try:
             existing = read_text(path)
         except (OSError, UnicodeDecodeError) as exc:
@@ -910,30 +982,62 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
     if not args.no_codex:
         runtime_names.append("codex_precompact.py")
     for name in runtime_names:
-        path = root / ".agent-tools" / "shrinkydink" / name
-        changes.append(classify_change(path, runtime_asset(name), "Installed runtime helper"))
+        path = destination(Path(".agent-tools") / "shrinkydink" / name)
+        if path is None:
+            continue
+        try:
+            change = classify_change(path, runtime_asset(name), "Installed runtime helper")
+        except (OSError, UnicodeDecodeError) as exc:
+            changes.append(conflict(path, f"Cannot read runtime destination safely: {exc}"))
+            continue
+        change.mode = 0o755
+        changes.append(change)
 
     if not args.no_claude:
-        claude_change, claude_warnings = plan_claude_settings(root)
-        changes.append(claude_change)
-        warnings.extend(claude_warnings)
+        claude_path = destination(Path(".claude") / "settings.local.json")
+        if claude_path is not None:
+            claude_change, claude_warnings = plan_claude_settings(claude_path)
+            claude_change.mode = 0o600
+            changes.append(claude_change)
+            warnings.extend(claude_warnings)
 
     if not args.no_codex:
-        codex_config_path = root / ".codex" / "config.toml"
-        codex_config_existing = read_text(codex_config_path)
-        inline_hooks = has_inline_codex_hooks(codex_config_existing)
-        codex_config_change, codex_warnings = plan_codex_config(root, inline_hooks)
-        changes.append(codex_config_change)
-        warnings.extend(codex_warnings)
-        if not inline_hooks:
-            changes.append(plan_codex_hooks_json(root))
-        elif (root / ".codex" / "hooks.json").exists():
-            warnings.append(
-                WarningItem(
-                    "codex",
-                    "This project already has both inline Codex hooks and `.codex/hooks.json`; Codex will merge them and may warn at startup.",
+        codex_config_path = destination(Path(".codex") / "config.toml")
+        inline_hooks = False
+        if codex_config_path is not None:
+            try:
+                codex_config_existing = read_text(codex_config_path)
+                inline_hooks = has_inline_codex_hooks(codex_config_existing)
+                codex_config_change, codex_warnings = plan_codex_config(
+                    codex_config_path, inline_hooks
                 )
+                changes.append(codex_config_change)
+                warnings.extend(codex_warnings)
+            except (OSError, UnicodeDecodeError) as exc:
+                changes.append(conflict(codex_config_path, f"Cannot read Codex config safely: {exc}"))
+        if not inline_hooks:
+            codex_hooks_path = destination(Path(".codex") / "hooks.json")
+            if codex_hooks_path is not None:
+                changes.append(plan_codex_hooks_json(codex_hooks_path))
+        else:
+            codex_hooks_path, hooks_error = resolve_managed_destination(
+                root, Path(".codex") / "hooks.json"
             )
+            if hooks_error:
+                changes.append(
+                    Change(
+                        path=str(root / ".codex" / "hooks.json"),
+                        status="conflict",
+                        note=hooks_error,
+                    )
+                )
+            elif codex_hooks_path is not None and codex_hooks_path.exists():
+                warnings.append(
+                    WarningItem(
+                        "codex",
+                        "This project already has both inline Codex hooks and `.codex/hooks.json`; Codex will merge them and may warn at startup.",
+                    )
+                )
 
     large_threshold = int(effective.get("large_file_warning_kb", DEFAULT_LARGE_FILE_WARNING_KB))
     large_files = tracked_large_files(root, large_threshold)
@@ -959,19 +1063,210 @@ def build_plan(root: Path, args: argparse.Namespace) -> tuple[list[Change], list
     return changes, warnings, ecosystems, effective
 
 
-def apply_changes(changes: list[Change]) -> list[WarningItem]:
-    warnings: list[WarningItem] = []
+def mark_transaction_aborted(changes: list[Change], reason: str) -> None:
     for change in changes:
-        if not change.changed or change.new is None:
+        if change.changed:
+            original = change.note
+            change.status = "conflict"
+            change.note = f"{reason}; planned change: {original}"
+
+
+def remove_created_directories(
+    created: list[Path], warnings: list[WarningItem]
+) -> None:
+    for directory in reversed(created):
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
             continue
+        except OSError as exc:
+            warnings.append(
+                WarningItem(
+                    "rollback",
+                    f"Could not remove transaction-created directory {directory}: {exc}",
+                )
+            )
+
+
+def apply_changes(root: Path, changes: list[Change]) -> ApplyResult:
+    warnings: list[WarningItem] = []
+    candidates = [change for change in changes if change.changed and change.new is not None]
+
+    # Revalidate the full set immediately before the first staging write.
+    for change in candidates:
         path = Path(change.path)
         try:
-            atomic_write(path, change.new)
-        except OSError as exc:
-            change.status = "conflict"
-            change.note = f"Write failed: {exc}"
-            warnings.append(WarningItem("write", f"Failed to write {path}: {exc}"))
-    return warnings
+            relative = path.relative_to(root)
+        except ValueError:
+            error = f"Managed destination is outside the repository: {path}"
+        else:
+            _, error = resolve_managed_destination(root, relative)
+        if error is None and path.is_symlink():
+            error = f"Refusing to replace symbolic link: {path}"
+        if error is None and path.exists() and not path.is_file():
+            error = f"Expected a regular file: {path}"
+        if error is None and change.status == "create" and path.exists():
+            error = f"Destination appeared after planning: {path}"
+        if error is None and change.status == "update" and not path.exists():
+            error = f"Destination disappeared after planning: {path}"
+        if error is None and change.status == "update":
+            try:
+                current = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                error = f"Cannot re-read destination during apply preflight: {path}: {exc}"
+            else:
+                if current != change.old:
+                    error = f"Destination changed after planning: {path}"
+        if error is not None:
+            mark_transaction_aborted(changes, f"Apply preflight failed: {error}")
+            warnings.append(WarningItem("preflight", error))
+            return ApplyResult(warnings, False, [], [])
+
+    staged: list[StagedChange] = []
+    created_directories: list[Path] = []
+    try:
+        for change in candidates:
+            path = Path(change.path)
+            missing: list[Path] = []
+            current = path.parent
+            while current != root and not current.exists():
+                missing.append(current)
+                current = current.parent
+            for directory in reversed(missing):
+                directory.mkdir()
+                created_directories.append(directory)
+
+            existed = path.exists()
+            prior_bytes = path.read_bytes() if existed else None
+            prior_mode = stat.S_IMODE(path.stat().st_mode) if existed else None
+            mode = prior_mode if prior_mode is not None else change.mode or 0o644
+            written_bytes = change.new.encode("utf-8")
+            fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+            temp_path = Path(temp_name)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(written_bytes)
+                os.chmod(temp_path, mode)
+            except BaseException:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+            staged.append(
+                StagedChange(
+                    change=change,
+                    path=path,
+                    temp_path=temp_path,
+                    prior_bytes=prior_bytes,
+                    prior_mode=prior_mode,
+                    written_bytes=written_bytes,
+                    written_hash=hashlib.sha256(written_bytes).hexdigest(),
+                )
+            )
+    except (OSError, UnicodeError) as exc:
+        for item in staged:
+            try:
+                item.temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        remove_created_directories(created_directories, warnings)
+        reason = f"Apply staging failed before any replacement: {exc}"
+        mark_transaction_aborted(changes, reason)
+        warnings.append(WarningItem("write", reason))
+        return ApplyResult(warnings, False, [], [])
+
+    committed: list[StagedChange] = []
+    try:
+        for item in staged:
+            os.replace(item.temp_path, item.path)
+            committed.append(item)
+    except OSError as exc:
+        failed_path = item.path
+        warnings.append(
+            WarningItem(
+                "write",
+                f"Failed to replace {failed_path}: {exc}; rolling back "
+                f"{len(committed)} changed destination(s)",
+            )
+        )
+        restored: list[str] = []
+        rollback_skipped: list[str] = []
+        for applied in reversed(committed):
+            try:
+                current_bytes = applied.path.read_bytes()
+            except OSError as read_exc:
+                rollback_skipped.append(str(applied.path))
+                warnings.append(
+                    WarningItem(
+                        "rollback",
+                        f"Could not verify {applied.path} before rollback: {read_exc}; left unchanged",
+                    )
+                )
+                continue
+            current_hash = hashlib.sha256(current_bytes).hexdigest()
+            if current_hash != applied.written_hash or current_bytes != applied.written_bytes:
+                rollback_skipped.append(str(applied.path))
+                warnings.append(
+                    WarningItem(
+                        "rollback",
+                        f"Skipped rollback for independently changed {applied.path}",
+                    )
+                )
+                continue
+            try:
+                if applied.prior_bytes is None:
+                    applied.path.unlink()
+                else:
+                    fd, rollback_name = tempfile.mkstemp(
+                        prefix=f".{applied.path.name}.rollback.",
+                        dir=str(applied.path.parent),
+                    )
+                    rollback_path = Path(rollback_name)
+                    try:
+                        with os.fdopen(fd, "wb") as handle:
+                            handle.write(applied.prior_bytes)
+                        rollback_mode = (
+                            applied.prior_mode
+                            if applied.prior_mode is not None
+                            else 0o644
+                        )
+                        os.chmod(rollback_path, rollback_mode)
+                        os.replace(rollback_path, applied.path)
+                    finally:
+                        try:
+                            rollback_path.unlink()
+                        except FileNotFoundError:
+                            pass
+                restored.append(str(applied.path))
+                warnings.append(WarningItem("rollback", f"Restored {applied.path}"))
+            except OSError as rollback_exc:
+                rollback_skipped.append(str(applied.path))
+                warnings.append(
+                    WarningItem(
+                        "rollback",
+                        f"Failed to restore {applied.path}: {rollback_exc}",
+                    )
+                )
+
+        for staged_item in staged:
+            try:
+                staged_item.temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        remove_created_directories(created_directories, warnings)
+        summary = (
+            f"Apply transaction failed at {failed_path}; restored {len(restored)} "
+            f"destination(s), skipped {len(rollback_skipped)} rollback(s)"
+        )
+        mark_transaction_aborted(changes, summary)
+        return ApplyResult(warnings, False, restored, rollback_skipped)
+
+    return ApplyResult(warnings, True, [], [])
 
 
 def relative_path(path: str, root: Path) -> str:
@@ -1023,7 +1318,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--repo", default=".", help="Repository path (default: current directory)")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply", action="store_true", help="Write safe planned changes")
+    mode.add_argument(
+        "--apply", action="store_true", help="Write the full validated change set transactionally"
+    )
     mode.add_argument("--check", action="store_true", help="Exit 1 when drift or conflicts exist")
     parser.add_argument(
         "--context-warning-percent",
@@ -1071,7 +1368,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     if args.apply:
-        warnings.extend(apply_changes(changes))
+        conflicts = [change for change in changes if change.status == "conflict"]
+        if conflicts:
+            warnings.append(
+                WarningItem(
+                    "preflight",
+                    f"Apply aborted before staging because {len(conflicts)} conflict(s) "
+                    "must be resolved first; no destinations were written.",
+                )
+            )
+        else:
+            apply_result = apply_changes(root, changes)
+            warnings.extend(apply_result.warnings)
 
     if args.json:
         payload = {
@@ -1081,8 +1389,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             "settings": effective,
             "changes": [
                 {
-                    **asdict(change),
                     "path": relative_path(change.path, root),
+                    "status": change.status,
+                    "note": change.note,
                     "old": None,
                     "new": None,
                 }

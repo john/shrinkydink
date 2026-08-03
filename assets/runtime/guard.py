@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Best-effort PreToolUse guard for the repository's .agentsignore file.
+"""Best-effort PreToolUse guard for the repository's configured ignore file.
 
 The same JSON response shape is accepted by Claude Code and OpenAI Codex.
 This is a guardrail, not a sandbox: hosted tools, direct @-imports, and some
@@ -57,7 +57,7 @@ class Rule:
 def repo_root(payload: dict[str, Any]) -> Path:
     """Find the repository root without depending on the hook working directory."""
     installed_root = Path(__file__).resolve().parents[2]
-    if (installed_root / ".git").exists() or (installed_root / ".agentsignore").exists():
+    if (installed_root / ".git").exists() or (installed_root / ".shrinkydink.json").exists():
         return installed_root
 
     for value in (os.environ.get("CLAUDE_PROJECT_DIR"), payload.get("cwd"), os.getcwd()):
@@ -66,7 +66,7 @@ def repo_root(payload: dict[str, Any]) -> Path:
         candidate = Path(str(value)).expanduser().resolve()
         current = candidate if candidate.is_dir() else candidate.parent
         for parent in (current, *current.parents):
-            if (parent / ".git").exists() or (parent / ".agentsignore").exists():
+            if (parent / ".git").exists() or (parent / ".shrinkydink.json").exists():
                 return parent
     return installed_root
 
@@ -477,12 +477,12 @@ def main() -> int:
                 "explicit user request or an indispensable, documented exception."
             )
         message = (
-            "Shrinkydink: this tool call touches paths matched by .agentsignore: "
+            f"Shrinkydink: this tool call touches paths matched by {ignore_name}: "
             f"{details}. {guidance} Never reveal secret values from ignored files."
         )
     else:
         message = (
-            "Shrinkydink: this broad search may traverse paths in .agentsignore. "
+            f"Shrinkydink: this broad search may traverse paths in {ignore_name}. "
             "Add explicit exclusions or use a narrower target before ingesting results."
         )
 

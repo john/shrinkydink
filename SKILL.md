@@ -16,8 +16,8 @@ Use the bundled deterministic script to audit or configure one repository withou
    python3 <skill-directory>/scripts/shrinkydink.py --repo <repo-root>
    ```
 
-3. Review conflicts and warnings before writing. Preserve malformed JSON, unmatched managed markers, explicit status-line choices, and unusual existing hook structures; provide the generated diff or copyable replacement text instead of overwriting them.
-4. When the user requested setup or repair and the audit has no material conflicts, apply the safe changes:
+3. Review conflicts and warnings before writing. Preserve malformed JSON, unmatched managed markers, explicit status-line choices, and unusual existing hook structures; apply aborts before writing when any destination conflicts.
+4. When the user requested setup or repair and the audit has no material conflicts, apply the complete validated change set transactionally:
 
    ```bash
    python3 <skill-directory>/scripts/shrinkydink.py --repo <repo-root> --apply
@@ -40,7 +40,7 @@ Use the bundled deterministic script to audit or configure one repository withou
 - Prepend managed blocks in order-sensitive ignore and attributes files so later repository-owned rules retain precedence.
 - Merge JSON objects and hook arrays structurally. Never replace an invalid JSON file or a non-object hook structure.
 - Validate existing and generated Codex TOML when `tomllib` is available; preserve invalid TOML and report a conflict.
-- Refuse to replace symbolic links. Preserve existing file modes and use owner-only permissions for newly created Claude local settings where supported.
+- Refuse to replace symbolic links and reject managed paths whose existing parent components resolve outside the repository. Preserve existing file modes and use owner-only permissions for newly created Claude local settings where supported.
 - Preserve an existing Claude status line or Codex status line that the script cannot safely compose with. Show the manual integration needed.
 - Default `.agentsignore` to `warn`. Use `deny` only when the user explicitly requests hard blocking and understands that intentional exceptions require changing `.shrinkydink.json`.
 - Do not add broad ignores for source, lockfiles, fixtures, migrations, documentation, images, or PDFs merely to make the repository smaller.
