@@ -20,16 +20,24 @@ from typing import Any, Iterable, Optional
 DEFAULT_MODE = "warn"
 PATH_KEYS = {
     "file",
+    "files",
     "file_path",
+    "file_paths",
     "filepath",
     "filename",
     "path",
+    "paths",
     "directory",
+    "directories",
     "dir",
     "root",
+    "roots",
     "target",
+    "targets",
     "source",
+    "sources",
     "destination",
+    "destinations",
 }
 SKIP_KEYS = {
     "content",
@@ -40,7 +48,7 @@ SKIP_KEYS = {
     "description",
 }
 PATCH_PATH_RE = re.compile(
-    r"^\*\*\*\s+(?:Add|Update|Delete|Move to)\s+File:\s+(.+?)\s*$",
+    r"^\*\*\*\s+(?:(?:Add|Update|Delete|Move to)\s+File:|Move to:)\s+(.+?)\s*$",
     re.MULTILINE,
 )
 
@@ -52,6 +60,12 @@ class Rule:
     negated: bool
     directory_only: bool
     regex: re.Pattern[str]
+
+
+@dataclass(frozen=True)
+class SearchOperation:
+    scopes: tuple[str, ...]
+    exclusions: tuple[str, ...]
 
 
 def repo_root(payload: dict[str, Any]) -> Path:
@@ -180,38 +194,32 @@ def match_rule(relative_path: str, rules: Iterable[Rule]) -> Optional[Rule]:
     return matched if ignored else None
 
 
-def strings_from_paths(value: Any, key: str = "") -> Iterable[str]:
+def strings_from_paths(
+    value: Any, key: str = "", path_context: bool = False
+) -> Iterable[str]:
+    """Yield strings only when they occur in an explicitly path-bearing field."""
+    if isinstance(value, str):
+        if path_context or key in PATH_KEYS:
+            yield value
+        return
+
     if isinstance(value, dict):
         for child_key, child_value in value.items():
             lowered = str(child_key).lower()
             if lowered in SKIP_KEYS:
                 continue
-            if lowered in PATH_KEYS and isinstance(child_value, str):
-                yield child_value
-            elif lowered not in {"command"}:
-                yield from strings_from_paths(child_value, lowered)
-    elif isinstance(value, list):
+            if lowered == "command" and not path_context:
+                continue
+            yield from strings_from_paths(
+                child_value,
+                lowered,
+                path_context or lowered in PATH_KEYS,
+            )
+        return
+
+    if isinstance(value, (list, tuple)):
         for child in value:
-            yield from strings_from_paths(child, key)
-
-
-def shell_path_candidates(command: str) -> Iterable[str]:
-    for patch_path in PATCH_PATH_RE.findall(command):
-        yield patch_path.strip()
-
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        tokens = command.split()
-
-    for token in tokens:
-        cleaned = token.strip("'\"`()[]{};,:")
-        if not cleaned or cleaned.startswith("-") or "=" in cleaned[:40]:
-            continue
-        if cleaned.startswith(("http://", "https://", "ssh://")):
-            continue
-        if "/" in cleaned or "\\" in cleaned or cleaned.startswith("."):
-            yield cleaned
+            yield from strings_from_paths(child, key, path_context)
 
 
 def literal_prefix(value: str) -> str:
@@ -294,20 +302,53 @@ def positional_args(
     return positionals, pattern_from_option
 
 
-def target_is_repo_root(value: str, root: Path, cwd: Path) -> bool:
-    candidate = literal_prefix(value.strip().replace("\\", "/"))
-    if not candidate or candidate in {".", "./"}:
-        return True
-    path = Path(candidate).expanduser()
-    if not path.is_absolute():
-        path = cwd / path
-    try:
-        return path.resolve(strict=False) == root.resolve()
-    except OSError:
-        return False
+def option_values(
+    args: list[str], names: set[str], attached_short: Optional[set[str]] = None
+) -> list[str]:
+    """Return values for a bounded set of options without evaluating the shell."""
+    values: list[str] = []
+    attached_short = attached_short or set()
+    index = 0
+    while index < len(args):
+        token = args[index]
+        option_name, separator, inline_value = token.partition("=")
+        if option_name in names:
+            if separator:
+                values.append(inline_value)
+            elif index + 1 < len(args):
+                values.append(args[index + 1])
+                index += 1
+        else:
+            for short_name in attached_short:
+                if token.startswith(short_name) and token != short_name:
+                    values.append(token[len(short_name) :])
+                    break
+        index += 1
+    return values
 
 
-def repo_wide_shell_search(command: str, root: Path, cwd: Path) -> bool:
+def strip_environment_assignments(segment: list[str]) -> list[str]:
+    while segment and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
+        segment = segment[1:]
+    return segment
+
+
+def generic_shell_paths(tokens: Iterable[str]) -> Iterable[str]:
+    for token in tokens:
+        cleaned = token.strip("'\"`()[]{};,:")
+        if not cleaned or cleaned.startswith("-") or "=" in cleaned[:40]:
+            continue
+        if cleaned.startswith(("http://", "https://", "ssh://")):
+            continue
+        if "/" in cleaned or "\\" in cleaned or cleaned.startswith("."):
+            yield cleaned
+
+
+def analyze_shell_command(command: str) -> tuple[list[str], list[SearchOperation]]:
+    """Extract bounded path operands and filesystem-search scopes."""
+    candidates = [path.strip() for path in PATCH_PATH_RE.findall(command)]
+    operations: list[SearchOperation] = []
+
     rg_value_options = {
         "-A", "--after-context", "-B", "--before-context", "-C", "--context",
         "--context-separator", "--dfa-size-limit", "-E", "--encoding", "--engine",
@@ -327,10 +368,15 @@ def repo_wide_shell_search(command: str, root: Path, cwd: Path) -> bool:
         "-g", "--glob", "--changed-before", "--changed-within", "-j", "--threads",
         "-S", "--size", "-t", "--type", "-x", "--exec", "-X", "--exec-batch",
     }
+    file_command_options = {
+        "cat": set(),
+        "head": {"-c", "--bytes", "-n", "--lines"},
+        "cp": {"-S", "--suffix", "-t", "--target-directory"},
+        "rm": set(),
+    }
 
-    for segment in shell_segments(command):
-        while segment and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
-            segment = segment[1:]
+    for original_segment in shell_segments(command):
+        segment = strip_environment_assignments(original_segment)
         if not segment:
             continue
         executable = Path(segment[0]).name.lower()
@@ -340,59 +386,199 @@ def repo_wide_shell_search(command: str, root: Path, cwd: Path) -> bool:
             positionals, pattern_from_option = positional_args(
                 args, rg_value_options | rg_pattern_options, rg_pattern_options
             )
-            targets = positionals if pattern_from_option else positionals[1:]
-        elif executable == "grep" and any(
+            scopes = positionals if pattern_from_option else positionals[1:]
+            glob_values = option_values(
+                args, {"-g", "--glob", "--iglob"}, {"-g"}
+            )
+            exclusions = [value[1:] for value in glob_values if value.startswith("!")]
+            candidates.extend(scopes)
+            operations.append(SearchOperation(tuple(scopes), tuple(exclusions)))
+            continue
+
+        recursive_grep = executable == "grep" and any(
             token in {"-r", "-R", "--recursive"}
-            or (token.startswith("-") and not token.startswith("--") and "r" in token.lower())
+            or (
+                token.startswith("-")
+                and not token.startswith("--")
+                and "r" in token.lower()
+            )
             for token in args
-        ):
+        )
+        if recursive_grep:
             positionals, pattern_from_option = positional_args(
                 args, grep_value_options, {"-e", "--regexp", "-f", "--file"}
             )
-            targets = positionals if pattern_from_option else positionals[1:]
-        elif executable in {"fd", "fdfind"}:
+            scopes = positionals if pattern_from_option else positionals[1:]
+            exclusions = option_values(args, {"--exclude", "--exclude-dir"})
+            candidates.extend(scopes)
+            operations.append(SearchOperation(tuple(scopes), tuple(exclusions)))
+            continue
+
+        if executable in {"fd", "fdfind"}:
             positionals, _ = positional_args(args, fd_value_options)
-            targets = positionals[1:]
-        elif executable == "find":
-            targets = []
+            scopes = positionals[1:]
+            exclusions = option_values(args, {"-E", "--exclude"}, {"-E"})
+            candidates.extend(scopes)
+            operations.append(SearchOperation(tuple(scopes), tuple(exclusions)))
+            continue
+
+        if executable == "find":
+            scopes: list[str] = []
             for token in args:
                 if token.startswith("-") or token in {"!", "("}:
                     break
-                targets.append(token)
-            targets = targets[:1]
-        elif executable == "ls" and any(
+                scopes.append(token)
+            candidates.extend(scopes)
+            operations.append(SearchOperation(tuple(scopes), ()))
+            continue
+
+        recursive_ls = executable == "ls" and any(
             token == "--recursive"
             or (token.startswith("-") and not token.startswith("--") and "R" in token)
             for token in args
-        ):
-            targets, _ = positional_args(args, set())
-        else:
+        )
+        if recursive_ls:
+            scopes, _ = positional_args(args, set())
+            candidates.extend(scopes)
+            operations.append(SearchOperation(tuple(scopes), ()))
             continue
 
-        if not targets or any(target_is_repo_root(target, root, cwd) for target in targets):
+        if executable in file_command_options:
+            positionals, _ = positional_args(args, file_command_options[executable])
+            candidates.extend(positionals)
+            if executable == "cp":
+                candidates.extend(
+                    option_values(args, {"-t", "--target-directory"}, {"-t"})
+                )
+            continue
+
+        candidates.extend(generic_shell_paths(args))
+
+    return candidates, operations
+
+
+def target_is_repo_root(value: str, root: Path, cwd: Path) -> bool:
+    candidate = literal_prefix(value.strip().replace("\\", "/"))
+    if not candidate or candidate in {".", "./"}:
+        return True
+    path = Path(candidate).expanduser()
+    if not path.is_absolute():
+        path = cwd / path
+    try:
+        return path.resolve(strict=False) == root.resolve()
+    except OSError:
+        return False
+
+
+def rule_identity(rule: Rule) -> tuple[str, bool]:
+    pattern = rule.pattern.replace("\\", "/")
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    return pattern.rstrip("/"), rule.directory_only
+
+
+def effective_ignore_rules(rules: Iterable[Rule]) -> list[Rule]:
+    """Return non-negated rules not canceled by a later exact negation."""
+    active: dict[tuple[str, bool], Rule] = {}
+    for rule in rules:
+        identity = rule_identity(rule)
+        if rule.negated:
+            active.pop(identity, None)
+        else:
+            active[identity] = rule
+    return list(active.values())
+
+
+def exclusion_key(value: str) -> str:
+    normalized = value.strip().replace("\\", "/")
+    if normalized.startswith("!"):
+        normalized = normalized[1:]
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/").rstrip("/")
+    if normalized.endswith("/**"):
+        normalized = normalized[:-3].rstrip("/")
+    return normalized
+
+
+def exclusions_cover_rules(exclusions: Iterable[str], rules: Iterable[Rule]) -> bool:
+    keys = {exclusion_key(value) for value in exclusions if exclusion_key(value)}
+    required = {exclusion_key(rule.pattern) for rule in rules}
+    return bool(required) and required.issubset(keys)
+
+
+def rule_may_match_under(scope: str, rule: Rule) -> bool:
+    normalized_scope = scope.replace("\\", "/").strip("/")
+    pattern = rule.pattern.replace("\\", "/")
+    anchored = pattern.startswith("/")
+    pattern = pattern.lstrip("/")
+
+    # An unanchored slashless pattern can match at any depth below any scope.
+    if not anchored and "/" not in pattern:
+        return True
+
+    prefix = literal_prefix(pattern).strip("/")
+    if not prefix or not normalized_scope:
+        return True
+    return (
+        prefix == normalized_scope
+        or prefix.startswith(normalized_scope + "/")
+        or normalized_scope.startswith(prefix + "/")
+    )
+
+
+def operation_may_traverse_ignored(
+    operation: SearchOperation,
+    rules: list[Rule],
+    root: Path,
+    cwd: Path,
+) -> bool:
+    if not rules or exclusions_cover_rules(operation.exclusions, rules):
+        return False
+    if not operation.scopes:
+        return True
+
+    for scope in operation.scopes:
+        if target_is_repo_root(scope, root, cwd):
+            return True
+        relative = to_relative(scope, root, cwd)
+        if relative is None:
+            # A scope outside this repository cannot traverse its ignored paths.
+            continue
+        if any(rule_may_match_under(relative, rule) for rule in rules):
             return True
     return False
 
 
-def repo_wide_direct_search(
-    tool_name: str, tool_input: Any, root: Path, cwd: Path
-) -> bool:
+def direct_search_operation(tool_name: str, tool_input: Any) -> Optional[SearchOperation]:
     if not isinstance(tool_input, dict):
-        return False
+        return None
     normalized_name = tool_name.lower()
     explicit_path = tool_input.get("path") or tool_input.get("directory")
+    scopes: list[str] = []
     if isinstance(explicit_path, str) and explicit_path:
-        return target_is_repo_root(explicit_path, root, cwd)
+        scopes.append(explicit_path)
 
     if normalized_name == "grep":
-        return True
+        glob_value = tool_input.get("glob")
+        exclusions: list[str] = []
+        if isinstance(glob_value, str) and glob_value.startswith("!"):
+            exclusions.append(glob_value[1:])
+        elif not scopes and isinstance(glob_value, str) and "/" in glob_value:
+            prefix = literal_prefix(glob_value)
+            if prefix:
+                scopes.append(prefix)
+        return SearchOperation(tuple(scopes), tuple(exclusions))
+
     if normalized_name == "glob":
-        pattern = tool_input.get("pattern") or tool_input.get("glob")
-        if not isinstance(pattern, str):
-            return True
-        prefix = literal_prefix(pattern)
-        return not prefix or target_is_repo_root(prefix, root, cwd)
-    return False
+        if not scopes:
+            pattern = tool_input.get("pattern") or tool_input.get("glob")
+            if isinstance(pattern, str):
+                prefix = literal_prefix(pattern)
+                if prefix:
+                    scopes.append(prefix)
+        return SearchOperation(tuple(scopes), ())
+    return None
 
 
 def main() -> int:
@@ -417,7 +603,8 @@ def main() -> int:
         ignore_relative = Path(".agentsignore")
     ignore_path = root / ignore_relative
     rules = parse_rules(ignore_path)
-    if not rules:
+    effective_rules = effective_ignore_rules(rules)
+    if not effective_rules:
         return 0
 
     cwd_value = payload.get("cwd") or os.getcwd()
@@ -429,20 +616,25 @@ def main() -> int:
     tool_name = str(payload.get("tool_name", ""))
     tool_input = payload.get("tool_input", {})
     candidates = list(strings_from_paths(tool_input))
+    search_operations: list[SearchOperation] = []
     command = ""
     if isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str):
         command = tool_input["command"]
-        candidates.extend(shell_path_candidates(command))
+        shell_candidates, shell_operations = analyze_shell_command(command)
+        candidates.extend(shell_candidates)
+        search_operations.extend(shell_operations)
 
     # Glob patterns sometimes name an ignored directory directly. A Grep
     # search pattern is content, not a path, so only its optional glob filter
     # is considered here.
     if isinstance(tool_input, dict):
-        keys = ("pattern", "glob") if tool_name.lower() == "glob" else ("glob",)
-        for key in keys:
-            value = tool_input.get(key)
-            if isinstance(value, str) and "/" in value:
+        if tool_name.lower() == "glob":
+            value = tool_input.get("pattern") or tool_input.get("glob")
+            if isinstance(value, str):
                 candidates.append(value)
+        direct_operation = direct_search_operation(tool_name, tool_input)
+        if direct_operation is not None:
+            search_operations.append(direct_operation)
 
     matches: list[tuple[str, Rule]] = []
     seen: set[str] = set()
@@ -455,8 +647,10 @@ def main() -> int:
         if rule:
             matches.append((relative, rule))
 
-    broad_search = bool(command and repo_wide_shell_search(command, root, cwd))
-    broad_search = broad_search or repo_wide_direct_search(tool_name, tool_input, root, cwd)
+    broad_search = any(
+        operation_may_traverse_ignored(operation, effective_rules, root, cwd)
+        for operation in search_operations
+    )
     if not matches and not broad_search:
         return 0
 
@@ -481,9 +675,14 @@ def main() -> int:
             f"{details}. {guidance} Never reveal secret values from ignored files."
         )
     else:
+        details = ", ".join(rule.raw for rule in effective_rules[:4])
+        if len(effective_rules) > 4:
+            details += f", plus {len(effective_rules) - 4} more"
         message = (
-            f"Shrinkydink: this broad search may traverse paths in {ignore_name}. "
-            "Add explicit exclusions or use a narrower target before ingesting results."
+            f"Shrinkydink: this broad operation may traverse paths in {ignore_name} "
+            f"matched by rules: {details}. Use a narrower target or explicitly exclude "
+            "every active rule before ingesting results. Never reveal secret values from "
+            "ignored files."
         )
 
     output: dict[str, Any] = {"systemMessage": message}
@@ -491,7 +690,7 @@ def main() -> int:
         "hookEventName": "PreToolUse",
         "additionalContext": message,
     }
-    if mode == "deny" and matches:
+    if mode == "deny" and (matches or broad_search):
         hook_output["permissionDecision"] = "deny"
         hook_output["permissionDecisionReason"] = message
     output["hookSpecificOutput"] = hook_output
