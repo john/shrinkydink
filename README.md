@@ -1,8 +1,8 @@
 # Shrinkydink
 
-Shrinkydink configures a repository for smaller, safer coding-agent context. It creates a shared policy, a Git-ignore-style agent context file, and Claude Code and OpenAI Codex guardrails while preserving repository-owned configuration.
+Shrinkydink is a cross-agent skill which configures a repository for smaller, safer coding-agent context. It creates a shared policy, a Git-ignore-style agent context file, an actual .gitignore file (and .gitattributes, or it updates those if already. present), and Claude Code and OpenAI Codex guardrails, all while while preserving repository-owned configuration.
 
-These guardrails are not a sandbox or a complete security boundary. Instructions and hooks can be bypassed by direct prompt attachments, unrecognized tool inputs, shell indirection, hosted tools, or clients that do not honor the configuration. Use filesystem permissions, secret management, and an external sandbox when you need hard isolation.
+Disclaimer the LLMs made me say: These guardrails are not a sandbox or a complete security boundary. Instructions and hooks can be bypassed by direct prompt attachments, unrecognized tool inputs, shell indirection, hosted tools, or clients that do not honor the configuration. Use filesystem permissions, secret management, and an external sandbox when you need hard isolation.
 
 ## Install
 
